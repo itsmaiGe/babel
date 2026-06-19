@@ -156,6 +156,38 @@ static NSString *TailLog(NSString *logPath) {
   return [tail componentsJoinedByString:@"\\n"];
 }
 
+static NSString *ShellQuote(NSString *value) {
+  NSString *escaped = [value stringByReplacingOccurrencesOfString:@"'" withString:@"'\\\\''"];
+  return [NSString stringWithFormat:@"'%@'", escaped];
+}
+
+static NSString *AppleScriptStringLiteral(NSString *value) {
+  NSMutableString *escaped = [value mutableCopy];
+  [escaped replaceOccurrencesOfString:@"\\\\" withString:@"\\\\\\\\" options:0 range:NSMakeRange(0, escaped.length)];
+  [escaped replaceOccurrencesOfString:@"\\"" withString:@"\\\\\\"" options:0 range:NSMakeRange(0, escaped.length)];
+  [escaped replaceOccurrencesOfString:@"\\n" withString:@"\\\\n" options:0 range:NSMakeRange(0, escaped.length)];
+  return [NSString stringWithFormat:@"\\"%@\\"", escaped];
+}
+
+static BOOL RunPrivilegedShellCommand(NSString *command, NSString **errorMessage) {
+  NSString *source = [NSString stringWithFormat:@"do shell script %@ with administrator privileges", AppleScriptStringLiteral(command)];
+  NSAppleScript *script = [[NSAppleScript alloc] initWithSource:source];
+  NSDictionary *errorInfo = nil;
+  NSAppleEventDescriptor *result = [script executeAndReturnError:&errorInfo];
+  if (result != nil) {
+    return YES;
+  }
+
+  NSString *message = errorInfo[NSAppleScriptErrorMessage];
+  if (message.length == 0) {
+    message = @"The privileged installer command failed.";
+  }
+  if (errorMessage != NULL) {
+    *errorMessage = message;
+  }
+  return NO;
+}
+
 static int RunNodeScript(NSString *scriptPath, NSString *successMessage) {
   BOOL useArm64Runner = NO;
   NSString *nodePath = FindNativeNode(&useArm64Runner);
@@ -166,37 +198,36 @@ static int RunNodeScript(NSString *scriptPath, NSString *successMessage) {
 
   NSString *logPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"discord-translator-mod-manager.log"];
   [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
-  NSFileHandle *logHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
 
-  NSTask *task = [[NSTask alloc] init];
+  NSString *nodeCommand = nil;
   if (useArm64Runner) {
-    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/arch"];
-    task.arguments = @[@"-arm64", nodePath, scriptPath];
+    nodeCommand = [NSString stringWithFormat:@"%@ -arm64 %@ %@",
+      ShellQuote(@"/usr/bin/arch"),
+      ShellQuote(nodePath),
+      ShellQuote(scriptPath)
+    ];
   } else {
-    task.executableURL = [NSURL fileURLWithPath:nodePath];
-    task.arguments = @[scriptPath];
-  }
-  task.currentDirectoryURL = [NSURL fileURLWithPath:ProjectRoot];
-  task.standardOutput = logHandle;
-  task.standardError = logHandle;
-
-  NSError *error = nil;
-  if (![task launchAndReturnError:&error]) {
-    [logHandle closeFile];
-    ShowAlert(AppName, error.localizedDescription ?: @"Failed to launch Node.js.");
-    return 1;
+    nodeCommand = [NSString stringWithFormat:@"%@ %@",
+      ShellQuote(nodePath),
+      ShellQuote(scriptPath)
+    ];
   }
 
-  [task waitUntilExit];
-  [logHandle closeFile];
+  NSString *command = [NSString stringWithFormat:@"cd %@ && %@ > %@ 2>&1",
+    ShellQuote(ProjectRoot),
+    nodeCommand,
+    ShellQuote(logPath)
+  ];
 
-  if (task.terminationStatus == 0) {
+  NSString *errorMessage = nil;
+  if (RunPrivilegedShellCommand(command, &errorMessage)) {
     ShowAlert(AppName, successMessage);
     return 0;
   }
 
-  ShowAlert(AppName, TailLog(logPath));
-  return task.terminationStatus;
+  NSString *tail = TailLog(logPath);
+  ShowAlert(AppName, tail.length > 0 ? tail : errorMessage);
+  return 1;
 }
 
 int main(int argc, const char *argv[]) {
