@@ -19,17 +19,18 @@ npm run uninstall:mod
 The build command creates:
 
 ```txt
-dist/Discord Translator Mod Installer.app
-dist/Discord Translator Mod Installer.zip
+dist/Discord Translator Mod Manager.app
+dist/Discord Translator Mod Manager.zip
 ```
 
-Double-click the app to install the demo into `/Applications/Discord.app`.
+Double-click the manager app to choose Install or Uninstall for `/Applications/Discord.app`.
 If the project is inside iCloud Drive, use the `.zip` artifact first; it avoids
 iCloud adding extended attributes inside the `.app` bundle.
 
 On Apple Silicon Macs, the installer prefers native arm64 Node.js from
-`/opt/homebrew/bin/node`. If it falls back to another Node binary, it checks
-`process.arch` and stops rather than running the installer through x64 Rosetta.
+`/opt/homebrew/bin/node`. It checks the Node binary with `lipo` before running
+it and launches it through `arch -arm64`, so Intel-only Node is skipped before
+macOS can prompt for Rosetta.
 
 ## Scope
 

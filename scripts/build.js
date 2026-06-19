@@ -7,30 +7,20 @@ const childProcess = require("node:child_process");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const DIST_DIR = path.join(PROJECT_ROOT, "dist");
+const MANAGER_NAME = "Discord Translator Mod Manager";
 
 function main() {
   fs.rmSync(DIST_DIR, { recursive: true, force: true });
   fs.mkdirSync(DIST_DIR, { recursive: true });
 
-  createCommandApp({
-    name: "Discord Translator Mod Installer",
-    script: "scripts/install.js",
-    successMessage: "Discord Translator Mod installed. Quit and reopen Discord to use it."
-  });
-
-  createCommandApp({
-    name: "Discord Translator Mod Uninstaller",
-    script: "scripts/uninstall.js",
-    successMessage: "Discord Translator Mod removed. Quit and reopen Discord."
-  });
-
-  packageCommandApp("Discord Translator Mod Installer");
-  packageCommandApp("Discord Translator Mod Uninstaller");
+  createManagerApp();
+  packageCommandApp(MANAGER_NAME);
 
   console.log(`Built macOS apps in ${DIST_DIR}`);
 }
 
-function createCommandApp({ name, script, successMessage }) {
+function createManagerApp() {
+  const name = MANAGER_NAME;
   const appDir = path.join(DIST_DIR, `${name}.app`);
   const contentsDir = path.join(appDir, "Contents");
   const macOSDir = path.join(contentsDir, "MacOS");
@@ -38,7 +28,7 @@ function createCommandApp({ name, script, successMessage }) {
 
   fs.mkdirSync(macOSDir, { recursive: true });
   fs.writeFileSync(path.join(contentsDir, "Info.plist"), plist(name), "utf8");
-  fs.writeFileSync(executable, runnerScript({ name, script, successMessage }), "utf8");
+  fs.writeFileSync(executable, runnerScript({ name }), "utf8");
   fs.chmodSync(executable, 0o755);
 
   if (process.platform === "darwin") {
@@ -69,39 +59,66 @@ function packageCommandApp(name) {
   }
 }
 
-function runnerScript({ name, script, successMessage }) {
+function runnerScript({ name }) {
   const projectRoot = shellQuote(PROJECT_ROOT);
-  const scriptPath = shellQuote(path.join(PROJECT_ROOT, script));
-  const quotedSuccess = successMessage.replace(/"/g, '\\"');
+  const installScript = shellQuote(path.join(PROJECT_ROOT, "scripts", "install.js"));
+  const uninstallScript = shellQuote(path.join(PROJECT_ROOT, "scripts", "uninstall.js"));
   const quotedName = name.replace(/"/g, '\\"');
 
   return `#!/bin/zsh
 set -u
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-LOG="$TMPDIR/discord-translator-mod-${script.includes("uninstall") ? "uninstall" : "install"}.log"
+LOG="$TMPDIR/discord-translator-mod-manager.log"
 cd ${projectRoot}
+CHOICE="$(osascript -e 'button returned of (display dialog "Choose what to do with Discord Translator Mod." buttons {"Cancel", "Uninstall", "Install"} default button "Install" cancel button "Cancel" with title "${quotedName}")' 2>/dev/null || true)"
+if [ -z "$CHOICE" ] || [ "$CHOICE" = "Cancel" ]; then
+  exit 0
+fi
+case "$CHOICE" in
+  Install)
+    SCRIPT=${installScript}
+    SUCCESS_MESSAGE="Discord Translator Mod installed. Quit and reopen Discord to use it."
+    ;;
+  Uninstall)
+    SCRIPT=${uninstallScript}
+    SUCCESS_MESSAGE="Discord Translator Mod removed. Quit and reopen Discord."
+    ;;
+  *)
+    exit 0
+    ;;
+esac
 NODE_BIN=""
+NODE_RUNNER=""
 for CANDIDATE in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-  if [ -x "$CANDIDATE" ]; then
+  if [ ! -x "$CANDIDATE" ]; then
+    continue
+  fi
+  if [ "$(uname -m)" = "arm64" ]; then
+    ARCHS="$(/usr/bin/lipo -archs "$CANDIDATE" 2>/dev/null || true)"
+    case " $ARCHS " in
+      *" arm64 "*)
+        NODE_BIN="$CANDIDATE"
+        NODE_RUNNER="/usr/bin/arch -arm64"
+        break
+        ;;
+    esac
+  else
     NODE_BIN="$CANDIDATE"
     break
   fi
 done
 if [ -z "$NODE_BIN" ]; then
-  osascript -e 'display dialog "Node.js was not found. Install Node.js or run this project with npm." buttons {"OK"} default button "OK" with icon stop'
+  osascript -e 'display dialog "Native arm64 Node.js was not found. Install the Apple Silicon build from https://nodejs.org or Homebrew under /opt/homebrew, then run this manager again. No Rosetta is required." buttons {"OK"} default button "OK" with title "${quotedName}" with icon stop'
   exit 1
 fi
-if [ "$(uname -m)" = "arm64" ]; then
-  NODE_ARCH="$("$NODE_BIN" -p 'process.arch' 2>/dev/null || true)"
-  if [ "$NODE_ARCH" != "arm64" ]; then
-    osascript -e 'display dialog "Apple Silicon Mac detected, but the selected Node.js is not arm64. Install native arm64 Node.js from https://nodejs.org or Homebrew under /opt/homebrew, then run this installer again." buttons {"OK"} default button "OK" with icon stop'
-    exit 1
-  fi
+if [ -n "$NODE_RUNNER" ]; then
+  $NODE_RUNNER "$NODE_BIN" "$SCRIPT" > "$LOG" 2>&1
+else
+  "$NODE_BIN" "$SCRIPT" > "$LOG" 2>&1
 fi
-"$NODE_BIN" ${scriptPath} > "$LOG" 2>&1
 STATUS=$?
 if [ "$STATUS" -eq 0 ]; then
-  osascript -e 'display dialog "${quotedSuccess}" buttons {"OK"} default button "OK" with title "${quotedName}"'
+  osascript -e "display dialog \\"$SUCCESS_MESSAGE\\" buttons {\\"OK\\"} default button \\"OK\\" with title \\"${quotedName}\\""
 else
   ERROR_TEXT="$(tail -n 12 "$LOG" | sed 's/"/\\\\"/g')"
   osascript -e "display dialog \\"$ERROR_TEXT\\" buttons {\\"OK\\"} default button \\"OK\\" with title \\"${quotedName}\\" with icon stop"
