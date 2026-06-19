@@ -9,7 +9,7 @@
     "build": "node scripts/build.js",
     "install:mod": "node scripts/install.js",
     "uninstall:mod": "node scripts/uninstall.js",
-    "verify": "npm test && npm run build"
+    "verify": "npm test && npm run build && node scripts/verify-dist.js"
   },
   "devDependencies": {
     "@electron/asar": "^4.0.1"

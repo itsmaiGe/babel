@@ -24,6 +24,9 @@ function main() {
     successMessage: "Discord Translator Mod removed. Quit and reopen Discord."
   });
 
+  packageCommandApp("Discord Translator Mod Installer");
+  packageCommandApp("Discord Translator Mod Uninstaller");
+
   console.log(`Built macOS apps in ${DIST_DIR}`);
 }
 
@@ -51,6 +54,21 @@ function createCommandApp({ name, script, successMessage }) {
   }
 }
 
+function packageCommandApp(name) {
+  const appDir = path.join(DIST_DIR, `${name}.app`);
+  const zipPath = path.join(DIST_DIR, `${name}.zip`);
+
+  if (process.platform === "darwin") {
+    childProcess.execFileSync("/usr/bin/xattr", ["-cr", appDir], {
+      stdio: "pipe"
+    });
+    childProcess.execFileSync("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", "--keepParent", appDir, zipPath], {
+      cwd: DIST_DIR,
+      stdio: "pipe"
+    });
+  }
+}
+
 function runnerScript({ name, script, successMessage }) {
   const projectRoot = shellQuote(PROJECT_ROOT);
   const scriptPath = shellQuote(path.join(PROJECT_ROOT, script));
@@ -59,14 +77,28 @@ function runnerScript({ name, script, successMessage }) {
 
   return `#!/bin/zsh
 set -u
-export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 LOG="$TMPDIR/discord-translator-mod-${script.includes("uninstall") ? "uninstall" : "install"}.log"
 cd ${projectRoot}
-if ! command -v node >/dev/null 2>&1; then
+NODE_BIN=""
+for CANDIDATE in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+  if [ -x "$CANDIDATE" ]; then
+    NODE_BIN="$CANDIDATE"
+    break
+  fi
+done
+if [ -z "$NODE_BIN" ]; then
   osascript -e 'display dialog "Node.js was not found. Install Node.js or run this project with npm." buttons {"OK"} default button "OK" with icon stop'
   exit 1
 fi
-node ${scriptPath} > "$LOG" 2>&1
+if [ "$(uname -m)" = "arm64" ]; then
+  NODE_ARCH="$("$NODE_BIN" -p 'process.arch' 2>/dev/null || true)"
+  if [ "$NODE_ARCH" != "arm64" ]; then
+    osascript -e 'display dialog "Apple Silicon Mac detected, but the selected Node.js is not arm64. Install native arm64 Node.js from https://nodejs.org or Homebrew under /opt/homebrew, then run this installer again." buttons {"OK"} default button "OK" with icon stop'
+    exit 1
+  fi
+fi
+"$NODE_BIN" ${scriptPath} > "$LOG" 2>&1
 STATUS=$?
 if [ "$STATUS" -eq 0 ]; then
   osascript -e 'display dialog "${quotedSuccess}" buttons {"OK"} default button "OK" with title "${quotedName}"'
@@ -119,3 +151,7 @@ function bundleSuffix(name) {
 if (require.main === module) {
   main();
 }
+
+module.exports = {
+  runnerScript
+};
