@@ -27,10 +27,10 @@ Double-click the manager app to choose Install or Uninstall for `/Applications/D
 If the project is inside iCloud Drive, use the `.zip` artifact first; it avoids
 iCloud adding extended attributes inside the `.app` bundle.
 
-On Apple Silicon Macs, the installer prefers native arm64 Node.js from
-`/opt/homebrew/bin/node`. It checks the Node binary with `lipo` before running
-it and launches it through `arch -arm64`, so Intel-only Node is skipped before
-macOS can prompt for Rosetta.
+On Apple Silicon Macs, the manager app itself is compiled as a native arm64
+Cocoa executable. It checks Node with `lipo` before running it and launches it
+through `arch -arm64`, so Intel-only Node is skipped before macOS can prompt
+for Rosetta.
 
 ## Scope
 

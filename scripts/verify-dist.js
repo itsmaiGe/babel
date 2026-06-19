@@ -27,6 +27,19 @@ function main() {
       childProcess.execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", path.join(tmp, `${name}.app`)], {
         stdio: "pipe"
       });
+
+      const executable = path.join(tmp, `${name}.app`, "Contents", "MacOS", name);
+      const archs = childProcess.execFileSync("/usr/bin/lipo", ["-archs", executable], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      }).trim().split(/\s+/);
+
+      if (!archs.includes("arm64")) {
+        throw new Error(`${name} is missing an arm64 executable slice.`);
+      }
+      if (archs.includes("x86_64")) {
+        throw new Error(`${name} unexpectedly contains an x86_64 executable slice.`);
+      }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

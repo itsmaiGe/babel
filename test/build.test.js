@@ -3,34 +3,37 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { runnerScript } = require("../scripts/build");
+const { managerSource } = require("../scripts/build");
 
-test("macOS manager runner prefers Apple Silicon Homebrew Node before Intel Homebrew Node", () => {
-  const script = runnerScript({
+test("native manager source prefers Apple Silicon Homebrew Node before Intel Homebrew Node", () => {
+  const source = managerSource({
     name: "Test Manager"
   });
 
-  assert.match(script, /export PATH="\/opt\/homebrew\/bin:\/usr\/local\/bin:/);
-  assert.match(script, /for CANDIDATE in \/opt\/homebrew\/bin\/node \/usr\/local\/bin\/node \/usr\/bin\/node/);
+  assert.match(source, /@"\/opt\/homebrew\/bin\/node"/);
+  assert.match(source, /@"\/usr\/local\/bin\/node"/);
 });
 
-test("macOS manager runner checks node architectures before running node", () => {
-  const script = runnerScript({
+test("native manager checks node architectures before running node", () => {
+  const source = managerSource({
     name: "Test Manager"
   });
 
-  assert.match(script, /\$\(uname -m\).*arm64/s);
-  assert.match(script, /\/usr\/bin\/lipo -archs "\$CANDIDATE"/);
-  assert.match(script, /NODE_RUNNER="\/usr\/bin\/arch -arm64"/);
-  assert.doesNotMatch(script, /process\.arch/);
+  assert.match(source, /strcmp\(systemInfo\.machine, "arm64"\)/);
+  assert.match(source, /RunAndCapture\(@"\/usr\/bin\/lipo", @\[@"-archs", candidate\]\)/);
+  assert.match(source, /@"\/usr\/bin\/arch"/);
+  assert.match(source, /@"-arm64", nodePath, scriptPath/);
+  assert.doesNotMatch(source, /process\.arch/);
+  assert.doesNotMatch(source, /osascript/);
 });
 
-test("macOS manager runner supports install and uninstall actions in one app", () => {
-  const script = runnerScript({
+test("native manager supports install and uninstall actions in one app", () => {
+  const source = managerSource({
     name: "Test Manager"
   });
 
-  assert.match(script, /buttons \{"Cancel", "Uninstall", "Install"\}/);
-  assert.match(script, /scripts', 'install\.js|scripts.*install\.js/);
-  assert.match(script, /scripts', 'uninstall\.js|scripts.*uninstall\.js/);
+  assert.match(source, /\[alert addButtonWithTitle:@"Install"\]/);
+  assert.match(source, /\[alert addButtonWithTitle:@"Uninstall"\]/);
+  assert.match(source, /InstallScript/);
+  assert.match(source, /UninstallScript/);
 });
