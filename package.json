@@ -1,0 +1,17 @@
+{
+  "name": "discord-translator-mod",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lightweight macOS Discord translator mod demo.",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build": "node scripts/build.js",
+    "install:mod": "node scripts/install.js",
+    "uninstall:mod": "node scripts/uninstall.js",
+    "verify": "npm test && npm run build"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.0.1"
+  }
+}
