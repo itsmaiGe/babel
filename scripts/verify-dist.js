@@ -9,7 +9,7 @@ const childProcess = require("node:child_process");
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const DIST_DIR = path.join(PROJECT_ROOT, "dist");
 const APP_NAMES = [
-  "Discord Translator Mod Manager"
+  "Babel Manager"
 ];
 
 function main() {

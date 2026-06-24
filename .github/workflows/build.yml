@@ -1,0 +1,88 @@
+name: Build installers
+
+# Builds, in the cloud:
+#   - macOS:   Babel Manager.app (Cocoa GUI) + a no-Node script fallback zip
+#   - Windows: Babel-Installer.exe (Go + giu GUI) + a no-Node script fallback zip
+# On a tag push (vX.Y.Z) it also publishes a GitHub Release with all artifacts.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: babel-mac
+          path: |
+            dist/Babel Manager.zip
+            dist/Babel-Windows.zip
+          if-no-files-found: error
+
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Prepare embedded payload
+        run: node scripts/prepare-installer-payload.js
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Resolve Go deps
+        working-directory: installer
+        run: go mod tidy
+      - name: Test install logic
+        working-directory: installer
+        run: go test ./internal/...
+      - name: Embed exe icon
+        working-directory: installer
+        run: go run github.com/akavel/rsrc@latest -ico babel.ico -o rsrc.syso
+      - name: Build exe
+        working-directory: installer
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          New-Item -ItemType Directory -Force -Path ..\dist | Out-Null
+          go build -ldflags "-H windowsgui -s -w" -o ..\dist\Babel-Installer.exe .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: babel-windows-exe
+          path: dist/Babel-Installer.exe
+          if-no-files-found: error
+
+  release:
+    needs: [build-mac, build-windows-exe]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "artifacts/babel-windows-exe/Babel-Installer.exe" \
+            "artifacts/babel-mac/Babel Manager.zip" \
+            "artifacts/babel-mac/Babel-Windows.zip" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Babel ${GITHUB_REF_NAME}" \
+            --notes "macOS: Babel Manager.zip. Windows: Babel-Installer.exe (or the no-Node Babel-Windows.zip). Fully quit and reopen Discord after installing."

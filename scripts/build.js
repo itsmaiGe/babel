@@ -2,32 +2,61 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const childProcess = require("node:child_process");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const DIST_DIR = path.join(PROJECT_ROOT, "dist");
-const MANAGER_NAME = "Discord Translator Mod Manager";
+const MANAGER_NAME = "Babel Manager";
 
 function main() {
   fs.rmSync(DIST_DIR, { recursive: true, force: true });
   fs.mkdirSync(DIST_DIR, { recursive: true });
 
-  createManagerApp();
-  packageCommandApp(MANAGER_NAME);
+  const buildRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-manager-build-"));
+  try {
+    const appDir = createManagerApp(buildRoot);
+    copyAppBundle(appDir, path.join(DIST_DIR, `${MANAGER_NAME}.app`));
+    packageCommandApp(appDir, MANAGER_NAME);
+  } finally {
+    fs.rmSync(buildRoot, { recursive: true, force: true });
+  }
 
-  console.log(`Built macOS app in ${DIST_DIR}`);
+  buildWindowsDist();
+
+  console.log(`Built macOS app and Windows package in ${DIST_DIR}`);
 }
 
-function createManagerApp() {
-  const appDir = path.join(DIST_DIR, `${MANAGER_NAME}.app`);
+function buildWindowsDist() {
+  const stageDir = path.join(DIST_DIR, "Babel-Windows");
+  const payloadDir = path.join(stageDir, "payload");
+
+  for (const name of ["Babel.bat", "Babel-Manager.ps1", "Install-Babel.ps1", "Uninstall-Babel.ps1"]) {
+    copyFile(path.join(PROJECT_ROOT, "scripts", "windows", name), path.join(stageDir, name));
+  }
+  copyFile(path.join(PROJECT_ROOT, "assets", "babel.ico"), path.join(stageDir, "babel.ico"));
+  copyStripped(path.join(PROJECT_ROOT, "src", "mod", "main.js"), path.join(payloadDir, "mod", "main.js"));
+  copyFile(path.join(PROJECT_ROOT, "src", "mod", "preload.js"), path.join(payloadDir, "mod", "preload.js"));
+  copyStripped(path.join(PROJECT_ROOT, "src", "mod", "renderer.js"), path.join(payloadDir, "mod", "renderer.js"));
+  copyDirectory(path.join(PROJECT_ROOT, "src", "shared"), path.join(payloadDir, "shared"));
+
+  childProcess.execFileSync("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--keepParent", stageDir, path.join(DIST_DIR, "Babel-Windows.zip")], { stdio: "pipe" });
+}
+
+function createManagerApp(buildRoot) {
+  const appDir = path.join(buildRoot, `${MANAGER_NAME}.app`);
   const contentsDir = path.join(appDir, "Contents");
   const macOSDir = path.join(contentsDir, "MacOS");
+  const resourcesDir = path.join(contentsDir, "Resources");
   const executable = path.join(macOSDir, MANAGER_NAME);
-  const sourcePath = path.join(DIST_DIR, "manager.m");
+  const sourcePath = path.join(buildRoot, "manager.m");
 
   fs.mkdirSync(macOSDir, { recursive: true });
+  fs.mkdirSync(resourcesDir, { recursive: true });
   fs.writeFileSync(path.join(contentsDir, "Info.plist"), plist(MANAGER_NAME), "utf8");
+  copyFile(path.join(PROJECT_ROOT, "assets", "babel.icns"), path.join(resourcesDir, "babel.icns"));
+  copyManagerResources(resourcesDir);
   fs.writeFileSync(sourcePath, managerSource({ name: MANAGER_NAME }), "utf8");
 
   childProcess.execFileSync("/usr/bin/clang", [
@@ -47,35 +76,78 @@ function createManagerApp() {
   fs.rmSync(sourcePath, { force: true });
   fs.chmodSync(executable, 0o755);
 
-  childProcess.execFileSync("/usr/bin/xattr", ["-cr", appDir], { stdio: "pipe" });
+  clearExtendedAttributes(appDir);
   childProcess.execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appDir], { stdio: "pipe" });
-  childProcess.execFileSync("/usr/bin/xattr", ["-cr", appDir], { stdio: "pipe" });
+  clearExtendedAttributes(appDir);
+
+  return appDir;
 }
 
-function packageCommandApp(name) {
-  const appDir = path.join(DIST_DIR, `${name}.app`);
+function packageCommandApp(appDir, name) {
   const zipPath = path.join(DIST_DIR, `${name}.zip`);
 
-  childProcess.execFileSync("/usr/bin/xattr", ["-cr", appDir], { stdio: "pipe" });
+  clearExtendedAttributes(appDir);
   childProcess.execFileSync("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", "--keepParent", appDir, zipPath], {
-    cwd: DIST_DIR,
     stdio: "pipe"
   });
 }
 
+function copyAppBundle(source, dest) {
+  fs.rmSync(dest, { recursive: true, force: true });
+  childProcess.execFileSync("/usr/bin/ditto", ["--norsrc", "--noextattr", source, dest], { stdio: "pipe" });
+}
+
+function clearExtendedAttributes(target) {
+  for (const attr of ["com.apple.FinderInfo", "com.apple.fileprovider.fpfs#P", "com.apple.provenance"]) {
+    childProcess.spawnSync("/usr/bin/xattr", ["-dr", attr, target], { stdio: "ignore" });
+  }
+  childProcess.spawnSync("/usr/bin/xattr", ["-cr", target], { stdio: "ignore" });
+}
+
+function copyManagerResources(resourcesDir) {
+  const payloadDir = path.join(resourcesDir, "payload");
+  const scriptsDir = path.join(resourcesDir, "scripts");
+
+  // Strip test-only scaffolding so it never ships in the running plugin.
+  copyStripped(path.join(PROJECT_ROOT, "src", "mod", "main.js"), path.join(payloadDir, "mod", "main.js"));
+  copyFile(path.join(PROJECT_ROOT, "src", "mod", "preload.js"), path.join(payloadDir, "mod", "preload.js"));
+  copyStripped(path.join(PROJECT_ROOT, "src", "mod", "renderer.js"), path.join(payloadDir, "mod", "renderer.js"));
+  copyDirectory(path.join(PROJECT_ROOT, "src", "shared"), path.join(payloadDir, "shared"));
+  copyFile(path.join(PROJECT_ROOT, "scripts", "desktop-core-action.js"), path.join(scriptsDir, "desktop-core-action.js"));
+}
+
+const TEST_ONLY_BLOCK = /\/\* @dtm-test-only:start[\s\S]*?@dtm-test-only:end \*\/\n?/g;
+
+function copyFile(source, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(source, dest);
+}
+
+function copyStripped(source, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, fs.readFileSync(source, "utf8").replace(TEST_ONLY_BLOCK, ""), "utf8");
+}
+
+function copyDirectory(source, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    const sourcePath = path.join(source, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectory(sourcePath, destPath);
+    } else if (entry.isFile()) {
+      copyFile(sourcePath, destPath);
+    }
+  }
+}
+
 function managerSource({ name }) {
-  const projectRoot = objcString(PROJECT_ROOT);
-  const installScript = objcString(path.join(PROJECT_ROOT, "scripts", "install.js"));
-  const uninstallScript = objcString(path.join(PROJECT_ROOT, "scripts", "uninstall.js"));
   const appName = objcString(name);
 
   return `#import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
 #import <sys/utsname.h>
 
-static NSString *const ProjectRoot = @${projectRoot};
-static NSString *const InstallScript = @${installScript};
-static NSString *const UninstallScript = @${uninstallScript};
 static NSString *const AppName = @${appName};
 
 static BOOL IsAppleSilicon(void) {
@@ -114,6 +186,50 @@ static NSString *RunAndCapture(NSString *executable, NSArray<NSString *> *argume
   return output ?: @"";
 }
 
+static BOOL RunNodeAndCapture(NSString *nodePath, BOOL useArm64Runner, NSArray<NSString *> *nodeArguments, NSString **output, NSString **errorMessage) {
+  NSTask *task = [[NSTask alloc] init];
+  if (useArm64Runner) {
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObjects:@"-arm64", nodePath, nil];
+    [arguments addObjectsFromArray:nodeArguments];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/arch"];
+    task.arguments = arguments;
+  } else {
+    task.executableURL = [NSURL fileURLWithPath:nodePath];
+    task.arguments = nodeArguments;
+  }
+
+  NSPipe *stdoutPipe = [NSPipe pipe];
+  NSPipe *stderrPipe = [NSPipe pipe];
+  task.standardOutput = stdoutPipe;
+  task.standardError = stderrPipe;
+
+  NSError *launchError = nil;
+  if (![task launchAndReturnError:&launchError]) {
+    if (errorMessage != NULL) {
+      *errorMessage = launchError.localizedDescription ?: @"Failed to launch Node.js.";
+    }
+    return NO;
+  }
+
+  [task waitUntilExit];
+  NSData *stdoutData = [[stdoutPipe fileHandleForReading] readDataToEndOfFile];
+  NSData *stderrData = [[stderrPipe fileHandleForReading] readDataToEndOfFile];
+  NSString *stdoutText = [[NSString alloc] initWithData:stdoutData encoding:NSUTF8StringEncoding] ?: @"";
+  NSString *stderrText = [[NSString alloc] initWithData:stderrData encoding:NSUTF8StringEncoding] ?: @"";
+
+  if (output != NULL) {
+    *output = stdoutText;
+  }
+  if (task.terminationStatus == 0) {
+    return YES;
+  }
+
+  if (errorMessage != NULL) {
+    *errorMessage = stderrText.length > 0 ? stderrText : (stdoutText.length > 0 ? stdoutText : @"Node.js command failed.");
+  }
+  return NO;
+}
+
 static NSString *FindNativeNode(BOOL *useArm64Runner) {
   NSArray<NSString *> *candidates = @[
     @"/opt/homebrew/bin/node",
@@ -143,52 +259,7 @@ static NSString *FindNativeNode(BOOL *useArm64Runner) {
   return nil;
 }
 
-static NSString *TailLog(NSString *logPath) {
-  NSString *content = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
-  if (content.length == 0) {
-    return @"No log output was captured.";
-  }
-
-  NSArray<NSString *> *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-  NSUInteger start = lines.count > 12 ? lines.count - 12 : 0;
-  NSIndexSet *indexes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(start, lines.count - start)];
-  NSArray<NSString *> *tail = [lines objectsAtIndexes:indexes];
-  return [tail componentsJoinedByString:@"\\n"];
-}
-
-static NSString *ShellQuote(NSString *value) {
-  NSString *escaped = [value stringByReplacingOccurrencesOfString:@"'" withString:@"'\\\\''"];
-  return [NSString stringWithFormat:@"'%@'", escaped];
-}
-
-static NSString *AppleScriptStringLiteral(NSString *value) {
-  NSMutableString *escaped = [value mutableCopy];
-  [escaped replaceOccurrencesOfString:@"\\\\" withString:@"\\\\\\\\" options:0 range:NSMakeRange(0, escaped.length)];
-  [escaped replaceOccurrencesOfString:@"\\"" withString:@"\\\\\\"" options:0 range:NSMakeRange(0, escaped.length)];
-  [escaped replaceOccurrencesOfString:@"\\n" withString:@"\\\\n" options:0 range:NSMakeRange(0, escaped.length)];
-  return [NSString stringWithFormat:@"\\"%@\\"", escaped];
-}
-
-static BOOL RunPrivilegedShellCommand(NSString *command, NSString **errorMessage) {
-  NSString *source = [NSString stringWithFormat:@"do shell script %@ with administrator privileges", AppleScriptStringLiteral(command)];
-  NSAppleScript *script = [[NSAppleScript alloc] initWithSource:source];
-  NSDictionary *errorInfo = nil;
-  NSAppleEventDescriptor *result = [script executeAndReturnError:&errorInfo];
-  if (result != nil) {
-    return YES;
-  }
-
-  NSString *message = errorInfo[NSAppleScriptErrorMessage];
-  if (message.length == 0) {
-    message = @"The privileged installer command failed.";
-  }
-  if (errorMessage != NULL) {
-    *errorMessage = message;
-  }
-  return NO;
-}
-
-static int RunNodeScript(NSString *scriptPath, NSString *successMessage) {
+static int RunAction(NSString *action, NSString *successMessage) {
   BOOL useArm64Runner = NO;
   NSString *nodePath = FindNativeNode(&useArm64Runner);
   if (nodePath == nil) {
@@ -196,37 +267,23 @@ static int RunNodeScript(NSString *scriptPath, NSString *successMessage) {
     return 1;
   }
 
-  NSString *logPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"discord-translator-mod-manager.log"];
-  [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
-
-  NSString *nodeCommand = nil;
-  if (useArm64Runner) {
-    nodeCommand = [NSString stringWithFormat:@"%@ -arm64 %@ %@",
-      ShellQuote(@"/usr/bin/arch"),
-      ShellQuote(nodePath),
-      ShellQuote(scriptPath)
-    ];
-  } else {
-    nodeCommand = [NSString stringWithFormat:@"%@ %@",
-      ShellQuote(nodePath),
-      ShellQuote(scriptPath)
-    ];
-  }
-
-  NSString *command = [NSString stringWithFormat:@"cd %@ && %@ > %@ 2>&1",
-    ShellQuote(ProjectRoot),
-    nodeCommand,
-    ShellQuote(logPath)
-  ];
-
+  NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
+  NSString *scriptPath = [resourcePath stringByAppendingPathComponent:@"scripts/desktop-core-action.js"];
+  NSString *payloadSource = [resourcePath stringByAppendingPathComponent:@"payload"];
   NSString *errorMessage = nil;
-  if (RunPrivilegedShellCommand(command, &errorMessage)) {
+  NSString *output = nil;
+  BOOL ok = RunNodeAndCapture(nodePath, useArm64Runner, @[
+    scriptPath,
+    action,
+    @"--payload-source",
+    payloadSource
+  ], &output, &errorMessage);
+  if (ok) {
     ShowAlert(AppName, successMessage);
     return 0;
   }
 
-  NSString *tail = TailLog(logPath);
-  ShowAlert(AppName, tail.length > 0 ? tail : errorMessage);
+  ShowAlert(AppName, errorMessage ?: @"Babel action failed.");
   return 1;
 }
 
@@ -238,17 +295,17 @@ int main(int argc, const char *argv[]) {
 
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = AppName;
-    alert.informativeText = @"Choose what to do with Discord Translator Mod.";
+    alert.informativeText = @"Choose what to do with Babel.";
     [alert addButtonWithTitle:@"Install"];
     [alert addButtonWithTitle:@"Uninstall"];
     [alert addButtonWithTitle:@"Cancel"];
 
     NSModalResponse response = [alert runModal];
     if (response == NSAlertFirstButtonReturn) {
-      return RunNodeScript(InstallScript, @"Discord Translator Mod installed. Quit and reopen Discord to use it.");
+      return RunAction(@"install", @"Babel installed. Quit and reopen Discord to use it.");
     }
     if (response == NSAlertSecondButtonReturn) {
-      return RunNodeScript(UninstallScript, @"Discord Translator Mod removed. Quit and reopen Discord.");
+      return RunAction(@"uninstall", @"Babel removed. Quit and reopen Discord.");
     }
 
     return 0;
@@ -264,6 +321,8 @@ function plist(name) {
 <dict>
   <key>CFBundleExecutable</key>
   <string>${escapeXml(name)}</string>
+  <key>CFBundleIconFile</key>
+  <string>babel</string>
   <key>CFBundleIdentifier</key>
   <string>local.discord-translator-mod.${bundleSuffix(name)}</string>
   <key>CFBundleName</key>

@@ -6,41 +6,73 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const asar = require("@electron/asar");
-const { installDiscordMod, LOADER_MARKER } = require("../scripts/install");
-const { uninstallDiscordMod } = require("../scripts/uninstall");
+const {
+  BACKUP_INDEX_NAME,
+  LOADER_MARKER,
+  PAYLOAD_DIR_NAME,
+  VANILLA_INDEX,
+  installDiscordMod,
+  resolveDiscordCoreDir,
+  uninstallDiscordMod
+} = require("../scripts/desktop-core-action");
 
-test("installer patches and uninstaller restores a Discord-style app.asar", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-install-test-"));
+test("installer patches and uninstaller restores the newest Discord desktop core", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-core-test-"));
   try {
-    const fakeApp = path.join(tmp, "Discord.app");
-    const resources = path.join(fakeApp, "Contents", "Resources");
-    const source = path.join(tmp, "source");
-    fs.mkdirSync(resources, { recursive: true });
-    fs.mkdirSync(source, { recursive: true });
-    fs.writeFileSync(path.join(source, "package.json"), JSON.stringify({ main: "bundle.js" }), "utf8");
-    fs.writeFileSync(path.join(source, "bundle.js"), "console.log('discord bundle');\n", "utf8");
+    const baseDir = path.join(tmp, "discord");
+    const oldCore = createDesktopCore(baseDir, "0.0.394", "discord_desktop_core");
+    const currentCore = createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
 
-    await asar.createPackage(source, path.join(resources, "app.asar"));
-    await installDiscordMod({ appPath: fakeApp, codesign: false });
+    assert.equal(resolveDiscordCoreDir({ baseDir }), currentCore);
 
-    const patched = path.join(tmp, "patched");
-    await asar.extractAll(path.join(resources, "app.asar"), patched);
+    const result = installDiscordMod({
+      baseDir,
+      payloadSource: path.resolve(__dirname, "..", "src")
+    });
 
-    assert.match(fs.readFileSync(path.join(patched, "bundle.js"), "utf8"), new RegExp(escapeRegExp(LOADER_MARKER)));
-    assert.equal(fs.existsSync(path.join(patched, "discord-translator-mod", "main.js")), true);
-    assert.equal(fs.existsSync(path.join(patched, "discord-translator-mod", "shared", "settings.js")), true);
+    assert.equal(result.coreDir, currentCore);
+    assert.equal(fs.readFileSync(path.join(currentCore, BACKUP_INDEX_NAME), "utf8"), VANILLA_INDEX);
+    assert.match(fs.readFileSync(path.join(currentCore, "index.js"), "utf8"), new RegExp(LOADER_MARKER));
+    assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME, "main.js")), true);
+    assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME, "shared", "settings.js")), true);
+    assert.equal(fs.readFileSync(path.join(oldCore, "index.js"), "utf8"), VANILLA_INDEX);
 
-    uninstallDiscordMod({ appPath: fakeApp, codesign: false });
-
-    const restored = path.join(tmp, "restored");
-    await asar.extractAll(path.join(resources, "app.asar"), restored);
-    assert.doesNotMatch(fs.readFileSync(path.join(restored, "bundle.js"), "utf8"), new RegExp(escapeRegExp(LOADER_MARKER)));
+    const uninstallResult = uninstallDiscordMod({ baseDir });
+    assert.equal(uninstallResult.changed, 2);
+    assert.equal(fs.readFileSync(path.join(currentCore, "index.js"), "utf8"), VANILLA_INDEX);
+    assert.equal(fs.existsSync(path.join(currentCore, BACKUP_INDEX_NAME)), false);
+    assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME)), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+test("installer refuses to overwrite an unknown desktop core index", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-core-conflict-test-"));
+  try {
+    const baseDir = path.join(tmp, "discord");
+    const core = createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
+    fs.writeFileSync(path.join(core, "index.js"), "require('./other-mod');\nmodule.exports = require('./core.asar');\n", "utf8");
+
+    assert.throws(() => installDiscordMod({
+      baseDir,
+      payloadSource: path.resolve(__dirname, "..", "src")
+    }), /Refusing to overwrite/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+function createDesktopCore(baseDir, versionDir, coreRelativeDir) {
+  const coreDir = path.join(baseDir, versionDir, "modules", coreRelativeDir);
+  fs.mkdirSync(coreDir, { recursive: true });
+  fs.writeFileSync(path.join(coreDir, "package.json"), JSON.stringify({
+    name: "discord_desktop_core",
+    version: "0.0.0",
+    private: "true",
+    main: "index.js"
+  }), "utf8");
+  fs.writeFileSync(path.join(coreDir, "index.js"), VANILLA_INDEX, "utf8");
+  fs.writeFileSync(path.join(coreDir, "core.asar"), "fake core", "utf8");
+  return coreDir;
 }

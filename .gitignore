@@ -8,3 +8,9 @@ dist/
 .env.*.local
 *.pem
 *.key
+work/
+
+# Go installer: generated payload + build outputs
+installer/payload/
+installer/*.syso
+installer/*.exe
