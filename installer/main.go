@@ -86,7 +86,9 @@ func main() {
 	wnd := giu.NewMasterWindow("Babel 安装器", 500, 360, giu.MasterWindowFlagsNotResizable)
 	// Microsoft YaHei ships with Windows and carries the CJK glyphs ImGui's default
 	// font lacks. giu auto-registers the strings used below, so the needed glyphs
-	// are rasterized; the larger size also makes the UI look cleaner.
-	giu.Context.FontAtlas.SetDefaultFont("msyh.ttc", 18)
+	// are rasterized; the larger size also makes the UI look cleaner. (giu's font
+	// API takes the name and size separately.)
+	giu.Context.FontAtlas.SetDefaultFont("msyh.ttc")
+	giu.Context.FontAtlas.SetDefaultFontSize(18)
 	wnd.Run(loop)
 }
