@@ -54,4 +54,12 @@ if (Test-Path $BaseDir) {
     }
 }
 
+# Wipe stored config (settings, API keys, cache) so nothing is left behind. This
+# lives under Electron's userData dir (Roaming), not the modules dir (Local).
+$configStore = Join-Path (Join-Path $env:APPDATA "discord") $PayloadDirName
+if (Test-Path $configStore) {
+  Remove-Item -Recurse -Force $configStore
+  $script:changed++
+}
+
 Write-Host "Removed Babel from $changed desktop core item(s). Restart Discord."

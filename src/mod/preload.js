@@ -737,7 +737,10 @@ const api = Object.freeze({
   listModels: request => ipcRenderer.invoke("dtm:list-models", request),
   insertAndSend: text => ipcRenderer.invoke("dtm:insert-and-send", text),
   openSettingsFile: () => ipcRenderer.invoke("dtm:open-settings-file"),
-  openExternal: url => ipcRenderer.invoke("dtm:open-external", url)
+  openExternal: url => ipcRenderer.invoke("dtm:open-external", url),
+  loadCache: () => ipcRenderer.invoke("dtm:load-cache"),
+  saveCache: cache => ipcRenderer.invoke("dtm:save-cache", cache),
+  checkUpdate: () => ipcRenderer.invoke("dtm:check-update")
 });
 
 function startRuntime(attempt = 0) {

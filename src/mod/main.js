@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { MODEL_PROVIDERS } = requireShared("defaults");
+const { MODEL_PROVIDERS, BABEL_VERSION } = requireShared("defaults");
 const { normalizeSettings } = requireShared("settings");
 const {
   buildAnthropicMessagesUrl,
@@ -27,11 +27,20 @@ const CHANNELS = Object.freeze({
   listModels: "dtm:list-models",
   insertAndSend: "dtm:insert-and-send",
   openSettingsFile: "dtm:open-settings-file",
-  openExternal: "dtm:open-external"
+  openExternal: "dtm:open-external",
+  loadCache: "dtm:load-cache",
+  saveCache: "dtm:save-cache",
+  checkUpdate: "dtm:check-update"
 });
+
+const MAX_PERSISTED_CACHE = 1000;
+const GITHUB_RELEASES_API = "https://api.github.com/repos/itsmaiGe/babel/releases/latest";
+const GITHUB_RELEASES_PAGE = "https://github.com/itsmaiGe/babel/releases/latest";
+const UPDATE_CHECK_TIMEOUT_MS = 8000;
 
 const MAX_TRANSLATE_CHARS = 12000;
 const MODEL_LIST_TIMEOUT_MS = 30000;
+const TRANSLATE_TIMEOUT_MS = 30000;
 
 let installed = false;
 let patchedBrowserWindow = false;
@@ -40,6 +49,57 @@ let runtimeElectron = null;
 
 function electronApi() {
   return runtimeElectron || require("electron");
+}
+
+// Prefer Electron's net.fetch over Node's global fetch: it routes through Chromium's
+// network stack and honors the system / Discord proxy. Node's fetch (undici) ignores
+// OS proxy settings entirely, which is the usual cause of "TypeError: fetch failed"
+// for users who only reach a provider through a proxy or VPN. Falls back to global
+// fetch when net.fetch isn't available.
+function httpFetch(url, options) {
+  try {
+    const electron = electronApi();
+    if (electron && electron.net && typeof electron.net.fetch === "function") {
+      return electron.net.fetch(url, options);
+    }
+  } catch (_error) {
+    // Fall through to global fetch.
+  }
+  return fetch(url, options);
+}
+
+// "TypeError: fetch failed" means the request never reached the server (DNS, refused,
+// reset, timeout, TLS) — not an API error. Detect it so we can show a clear reason.
+function isNetworkFailure(error) {
+  if (!error || error.name === "AbortError") return false;
+  if (error instanceof TypeError) return true;
+  if (error.cause) return true;
+  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_|certificate|self[- ]signed/i
+    .test(String(error.message || error));
+}
+
+function networkFailureMessage(error, contactedUrl) {
+  const cause = error && error.cause;
+  const code = String((cause && (cause.code || cause.errno)) || "").toUpperCase();
+  let host = "";
+  try {
+    host = new URL(contactedUrl).host;
+  } catch (_error) {
+    host = "";
+  }
+  const reasons = {
+    ENOTFOUND: "无法解析服务器地址（DNS 失败，多半是被墙或网络不通）",
+    EAI_AGAIN: "无法解析服务器地址（DNS 失败）",
+    ECONNREFUSED: "连接被拒绝",
+    ECONNRESET: "连接被重置",
+    ETIMEDOUT: "连接超时",
+    CERT_HAS_EXPIRED: "服务器证书已过期",
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE: "证书校验失败"
+  };
+  const reason = reasons[code] || "无法连接到服务器";
+  const where = host ? `（${host}）` : "";
+  const tail = code ? ` [${code}]` : "";
+  return `网络连接失败：${reason}${where}。请检查网络或代理后重试${tail}`;
 }
 
 function requireShared(name) {
@@ -149,6 +209,9 @@ function registerIpcHandlers(electron) {
   ipcMain.handle(CHANNELS.listModels, (_event, request) => listModels(request));
   ipcMain.handle(CHANNELS.openSettingsFile, () => openSettingsFile(electron));
   ipcMain.handle(CHANNELS.openExternal, (_event, url) => openExternal(electron, url));
+  ipcMain.handle(CHANNELS.loadCache, () => loadTranslationCache());
+  ipcMain.handle(CHANNELS.saveCache, (_event, cache) => saveTranslationCache(cache));
+  ipcMain.handle(CHANNELS.checkUpdate, () => checkForUpdate());
   ipcMain.handle(CHANNELS.insertAndSend, async (event, text) => {
     const webContents = event.sender;
     const outgoingText = String(text || "").trim();
@@ -168,6 +231,30 @@ function registerIpcHandlers(electron) {
 
 function getStoreDir() {
   return path.join(electronApi().app.getPath("userData"), "discord-translator-mod");
+}
+
+function getCachePath() {
+  return path.join(getStoreDir(), "cache.json");
+}
+
+function loadTranslationCache() {
+  try {
+    const filePath = getCachePath();
+    if (!fs.existsSync(filePath)) return {};
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function saveTranslationCache(cache) {
+  if (!cache || typeof cache !== "object" || Array.isArray(cache)) return { ok: false };
+  // Keep only the most-recent entries so the file can never grow without bound.
+  const entries = Object.entries(cache).filter(([, v]) => typeof v === "string").slice(-MAX_PERSISTED_CACHE);
+  fs.mkdirSync(getStoreDir(), { recursive: true });
+  fs.writeFileSync(getCachePath(), JSON.stringify(Object.fromEntries(entries)), "utf8");
+  return { ok: true, count: entries.length };
 }
 
 function getSettingsPath() {
@@ -205,6 +292,59 @@ async function openExternal(electron, url) {
   if (!/^https:\/\//i.test(value)) return { ok: false, error: "Only https links are allowed." };
   await electron.shell.openExternal(value);
   return { ok: true, url: value };
+}
+
+function parseVersion(value) {
+  const core = String(value || "").trim().replace(/^v/i, "").split(/[-+]/)[0];
+  return core.split(".").map(part => parseInt(part, 10) || 0);
+}
+
+// Returns 1 if a > b, -1 if a < b, 0 if equal (numeric semver-ish, ignores pre-release).
+function compareVersions(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  const length = Math.max(pa.length, pb.length);
+  for (let i = 0; i < length; i += 1) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da > db) return 1;
+    if (da < db) return -1;
+  }
+  return 0;
+}
+
+// Best-effort: ask GitHub for the latest release and compare to the bundled version.
+// Any failure (offline, rate-limited, no releases) resolves to "no update" silently.
+async function checkForUpdate() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
+  try {
+    const response = await httpFetch(GITHUB_RELEASES_API, {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Babel-Discord-Translator"
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) return { ok: false, current: BABEL_VERSION };
+
+    const body = await response.json().catch(() => null);
+    const tag = String((body && body.tag_name) || "").trim();
+    if (!tag) return { ok: false, current: BABEL_VERSION };
+
+    return {
+      ok: true,
+      current: BABEL_VERSION,
+      latest: tag.replace(/^v/i, ""),
+      updateAvailable: compareVersions(tag, BABEL_VERSION) > 0,
+      url: String((body && body.html_url) || GITHUB_RELEASES_PAGE)
+    };
+  } catch (_error) {
+    return { ok: false, current: BABEL_VERSION };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getApiKeysPath() {
@@ -340,11 +480,18 @@ async function listModels(request) {
   const timeout = setTimeout(() => controller.abort(), MODEL_LIST_TIMEOUT_MS);
 
   try {
-    const response = await fetch(requestData.url, {
-      method: "GET",
-      headers: requestData.headers,
-      signal: controller.signal
-    });
+    let response;
+    try {
+      response = await httpFetch(requestData.url, {
+        method: "GET",
+        headers: requestData.headers,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error && error.name === "AbortError") throw new Error("请求超时，请重试。");
+      if (isNetworkFailure(error)) throw new Error(networkFailureMessage(error, requestData.url));
+      throw error;
+    }
 
     const responseText = await response.text();
     let body = null;
@@ -384,15 +531,29 @@ async function translateWithSettings(request, settings, apiKey) {
   const requestData = buildProviderRequest(modelConfig, messages, apiKey);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  const timeout = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
 
   try {
-    const response = await fetch(requestData.url, {
-      method: "POST",
-      headers: requestData.headers,
-      signal: controller.signal,
-      body: JSON.stringify(requestData.body)
-    });
+    let response;
+    try {
+      response = await httpFetch(requestData.url, {
+        method: "POST",
+        headers: requestData.headers,
+        signal: controller.signal,
+        body: JSON.stringify(requestData.body)
+      });
+    } catch (error) {
+      // A timeout aborts the request; surface it as a clear, friendly message
+      // instead of a raw "The operation was aborted" so a stuck call never hangs.
+      if (error && error.name === "AbortError") {
+        throw new Error(`翻译超时（超过 ${Math.round(TRANSLATE_TIMEOUT_MS / 1000)} 秒），已自动取消，请重试。`);
+      }
+      // "fetch failed" → couldn't reach the provider at all; explain why.
+      if (isNetworkFailure(error)) {
+        throw new Error(networkFailureMessage(error, requestData.url));
+      }
+      throw error;
+    }
 
     const responseText = await response.text();
     let body = null;
@@ -514,9 +675,13 @@ function setElectronForTests(electron) {
 
 module.exports = {
   CHANNELS,
+  checkForUpdate,
+  compareVersions,
   getApiKeyStatus,
   install,
   listModels,
+  loadTranslationCache,
+  saveTranslationCache,
   openSettingsFile,
   openExternal,
   patchBrowserWindowOptions,

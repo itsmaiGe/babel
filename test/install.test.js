@@ -37,11 +37,41 @@ test("installer patches and uninstaller restores the newest Discord desktop core
     assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME, "shared", "settings.js")), true);
     assert.equal(fs.readFileSync(path.join(oldCore, "index.js"), "utf8"), VANILLA_INDEX);
 
-    const uninstallResult = uninstallDiscordMod({ baseDir });
-    assert.equal(uninstallResult.changed, 2);
+    // Stored config (settings + API keys + cache) lives under the userData dir; a
+    // temp one keeps the test from ever touching the developer's real config.
+    const userDataDir = path.join(tmp, "userdata", "discord");
+    const configStore = path.join(userDataDir, PAYLOAD_DIR_NAME);
+    fs.mkdirSync(configStore, { recursive: true });
+    fs.writeFileSync(path.join(configStore, "api-keys.json"), "{}", "utf8");
+    fs.writeFileSync(path.join(configStore, "settings.json"), "{}", "utf8");
+
+    const uninstallResult = uninstallDiscordMod({ baseDir, userDataDir });
+    // index restore + payload removal + config wipe.
+    assert.equal(uninstallResult.changed, 3);
+    assert.equal(uninstallResult.configRemoved, true);
     assert.equal(fs.readFileSync(path.join(currentCore, "index.js"), "utf8"), VANILLA_INDEX);
     assert.equal(fs.existsSync(path.join(currentCore, BACKUP_INDEX_NAME)), false);
     assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME)), false);
+    // The API key / settings files are gone after uninstall.
+    assert.equal(fs.existsSync(configStore), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("uninstall keeps stored config when keepConfig is set", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-keep-config-"));
+  try {
+    const baseDir = path.join(tmp, "discord");
+    createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
+    const userDataDir = path.join(tmp, "userdata", "discord");
+    const configStore = path.join(userDataDir, PAYLOAD_DIR_NAME);
+    fs.mkdirSync(configStore, { recursive: true });
+    fs.writeFileSync(path.join(configStore, "api-keys.json"), "{}", "utf8");
+
+    const result = uninstallDiscordMod({ baseDir, userDataDir, keepConfig: true });
+    assert.equal(result.configRemoved, false);
+    assert.equal(fs.existsSync(configStore), true);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -1065,6 +1065,9 @@ test("translation cache hit reuses the previous AI result", async () => {
   const document = new FakeDocument();
   const message = new FakeElement("div", "", rect(0, 0, 600, 120));
   message.id = "chat-messages-cache-1";
+  const content = new FakeElement("div", "Hello", rect(0, 0, 400, 24));
+  content.className = "messageContent__cache";
+  message.appendChild(content);
   document.appendChild(message);
   let requests = 0;
 
@@ -1093,13 +1096,57 @@ test("translation cache hit reuses the previous AI result", async () => {
       }
     });
 
-    await __test.translateMessage(message, "Hello");
-    await __test.translateMessage(message, "Hello");
+    await __test.translateMessage(message);
+    await __test.translateMessage(message);
 
     const translation = message.children.find(node => node.className === "dtm-translation-block");
     assert.equal(requests, 1);
     assert.equal(translation.textContent, "你好");
     assert.equal(translation.dataset.dtmCacheHit, "true");
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("reply messages translate the body and the quoted preview as separate units", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+
+  const message = new FakeElement("div", "", rect(0, 0, 600, 160));
+  message.id = "chat-messages-reply-1";
+  const quote = new FakeElement("div", "", rect(0, 0, 400, 20));
+  quote.className = "repliedMessage__abc";
+  const quoteText = new FakeElement("div", "original quoted text", rect(0, 0, 380, 16));
+  quoteText.className = "repliedTextContent__abc";
+  quote.appendChild(quoteText);
+  const content = new FakeElement("div", "my reply body", rect(0, 24, 400, 24));
+  content.className = "messageContent__abc";
+  message.append(quote, content);
+  document.appendChild(message);
+
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      settings: { enabled: true, readTranslation: { enabled: true, cache: true }, model: { targetLanguage: "简体中文" } },
+      nativeApi: { translate: async ({ text }) => ({ ok: true, text: "T:" + text }) }
+    });
+
+    await __test.translateMessage(message);
+
+    const blocks = Array.from(message.querySelectorAll(".dtm-translation-block"));
+    const bodyBlock = blocks.find(b => b.dataset.dtmUnit === "content");
+    const quoteBlock = blocks.find(b => b.dataset.dtmUnit === "quote");
+
+    assert.equal(blocks.length, 2);
+    // The bug: the body must be translated (not the quoted preview).
+    assert.equal(bodyBlock.textContent, "T:my reply body");
+    assert.equal(quoteBlock.textContent, "T:original quoted text");
   } finally {
     __test.resetRuntimeForTests();
     if (previousDocument) global.document = previousDocument;
@@ -1494,6 +1541,15 @@ function matchesSimple(node, selector) {
   const classMatch = selector.match(/^\[class\*='([^']+)'\]$/);
   if (classMatch) return node.className.includes(classMatch[1]);
 
+  const idPrefixMatch = selector.match(/^\[id\^='([^']+)'\]$/);
+  if (idPrefixMatch) return String(node.id || "").startsWith(idPrefixMatch[1]);
+
+  const dataContainsMatch = selector.match(/^\[data-([a-z0-9-]+)\*='([^']+)'\]$/i);
+  if (dataContainsMatch) {
+    const key = dataContainsMatch[1].replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+    return String(node.dataset[key] || "").includes(dataContainsMatch[2]);
+  }
+
   const dataMatch = selector.match(/^\[data-([a-z0-9-]+)='([^']+)'\]$/i);
   if (dataMatch) {
     const key = dataMatch[1].replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
@@ -1502,3 +1558,211 @@ function matchesSimple(node, selector) {
 
   return false;
 }
+
+function flushMicrotasks() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function chatMessage(channelId, snowflake, text, contentClass = "messageContent__auto") {
+  const message = new FakeElement("div", "", rect(0, 0, 600, 80));
+  message.id = `chat-messages-${channelId}-${snowflake}`;
+  const content = new FakeElement("div", text, rect(0, 0, 400, 24));
+  content.className = contentClass;
+  message.appendChild(content);
+  return message;
+}
+
+test("auto-translate only touches messages newer than the moment it was enabled", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  // An existing message present when auto-translate is switched on (the baseline).
+  const existing = chatMessage("100", "5000000000000000000", "Old message");
+  document.appendChild(existing);
+
+  let requests = 0;
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      channelId: "100",
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        autoTranslate: { enabled: true, skipSameLanguage: true },
+        model: { targetLanguage: "简体中文" }
+      },
+      nativeApi: {
+        translate: async ({ text }) => {
+          requests += 1;
+          return { ok: true, text: "T:" + text };
+        }
+      }
+    });
+
+    // First run in the channel pins the baseline; the existing backlog is left alone.
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+    assert.equal(existing.querySelectorAll(".dtm-translation-block").length, 0);
+
+    // A genuinely new message arrives (higher snowflake) in this channel.
+    const fresh = chatMessage("100", "6000000000000000000", "Hi there");
+    document.appendChild(fresh);
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+
+    assert.equal(requests, 1);
+    assert.equal(fresh.querySelectorAll(".dtm-translation-block").length, 1);
+    assert.equal(existing.querySelectorAll(".dtm-translation-block").length, 0);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("auto-translate skips a message already written in the target language", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  const baseline = chatMessage("200", "5000000000000000000", "baseline");
+  document.appendChild(baseline);
+
+  let requests = 0;
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      channelId: "200",
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        autoTranslate: { enabled: true, skipSameLanguage: true },
+        model: { targetLanguage: "简体中文" }
+      },
+      nativeApi: {
+        translate: async () => {
+          requests += 1;
+          return { ok: true, text: "should not run" };
+        }
+      }
+    });
+
+    // Pin the baseline, then a new Chinese message arrives.
+    __test.runAutoTranslate();
+    const chineseMessage = chatMessage("200", "6000000000000000000", "你好，今天过得怎么样？");
+    document.appendChild(chineseMessage);
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+
+    assert.equal(requests, 0);
+    assert.equal(chineseMessage.querySelectorAll(".dtm-translation-block").length, 0);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("auto-translate stays off when the global setting is disabled", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  document.appendChild(chatMessage("abc", "5000000000000000000", "baseline"));
+
+  let requests = 0;
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      channelId: "abc",
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        autoTranslate: { enabled: false, skipSameLanguage: true },
+        model: { targetLanguage: "简体中文" }
+      },
+      nativeApi: { translate: async () => { requests += 1; return { ok: true, text: "x" }; } }
+    });
+
+    // Even a brand-new message is ignored while the global setting is off.
+    const fresh = chatMessage("abc", "6000000000000000000", "Hi there");
+    document.appendChild(fresh);
+    __test.runAutoTranslate();
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+
+    assert.equal(requests, 0);
+    assert.equal(fresh.querySelectorAll(".dtm-translation-block").length, 0);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("snowflake comparison orders by length then lexicographically", () => {
+  assert.equal(__test.snowflakeGreater("6000000000000000000", "5000000000000000000"), true);
+  assert.equal(__test.snowflakeGreater("100000000000000000000", "999999999999999999"), true);
+  assert.equal(__test.snowflakeGreater("5000000000000000000", "5000000000000000000"), false);
+  assert.equal(__test.snowflakeGreater("", "5000000000000000000"), false);
+});
+
+test("auto-translate never translates the backlog when messages render after it is enabled", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  let requests = 0;
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      channelId: "300",
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        autoTranslate: { enabled: true },
+        model: { targetLanguage: "简体中文" }
+      },
+      nativeApi: {
+        translate: async ({ text }) => { requests += 1; return { ok: true, text: "T:" + text }; }
+      }
+    });
+
+    // Auto-translate is on but the channel hasn't rendered any messages yet.
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+
+    // The backlog now renders. It must be treated as the baseline, not translated.
+    const backlogA = chatMessage("300", "5000000000000000000", "backlog one");
+    const backlogB = chatMessage("300", "5000000000000000001", "backlog two");
+    document.appendChild(backlogA);
+    document.appendChild(backlogB);
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+    assert.equal(requests, 0);
+    assert.equal(backlogA.querySelectorAll(".dtm-translation-block").length, 0);
+    assert.equal(backlogB.querySelectorAll(".dtm-translation-block").length, 0);
+
+    // Only a genuinely newer message gets translated.
+    const fresh = chatMessage("300", "6000000000000000000", "fresh hi");
+    document.appendChild(fresh);
+    __test.runAutoTranslate();
+    await flushMicrotasks();
+    assert.equal(requests, 1);
+    assert.equal(fresh.querySelectorAll(".dtm-translation-block").length, 1);
+    assert.equal(backlogA.querySelectorAll(".dtm-translation-block").length, 0);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});

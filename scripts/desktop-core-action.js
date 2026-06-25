@@ -60,10 +60,44 @@ function uninstallDiscordMod(options = {}) {
     }
   }
 
+  // Also wipe the user's stored config (settings.json, api-keys.json, cache.json) so
+  // uninstalling leaves nothing behind — no saved API keys, no preferences. Opt out
+  // with { keepConfig: true }.
+  let configRemoved = false;
+  if (!options.keepConfig) {
+    const storeDir = configStoreDir(options);
+    if (fs.existsSync(storeDir)) {
+      fs.rmSync(storeDir, { recursive: true, force: true });
+      configRemoved = true;
+      changed += 1;
+    }
+  }
+
   return {
     coreDirs,
-    changed
+    changed,
+    configRemoved
   };
+}
+
+// The plugin stores its config under Electron's userData dir, which is NOT the same
+// as the Discord modules dir on Windows (Roaming vs Local), so resolve it separately.
+function discordUserDataDir(options = {}) {
+  if (options.userDataDir) {
+    return path.resolve(options.userDataDir);
+  }
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "discord");
+  }
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "discord");
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "discord");
+}
+
+function configStoreDir(options = {}) {
+  return path.join(discordUserDataDir(options), PAYLOAD_DIR_NAME);
 }
 
 function resolveDiscordCoreDir(options = {}) {
@@ -283,5 +317,6 @@ module.exports = {
   installDiscordMod,
   uninstallDiscordMod,
   resolveAllDiscordCoreDirs,
-  resolveDiscordCoreDir
+  resolveDiscordCoreDir,
+  configStoreDir
 };

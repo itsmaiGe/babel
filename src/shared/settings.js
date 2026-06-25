@@ -84,6 +84,12 @@ function normalizeSettings(input) {
     next.sendTranslation.enterToSend = asBoolean(source.sendTranslation.enterToSend, next.sendTranslation.enterToSend);
   }
 
+  if (isObject(source.autoTranslate)) {
+    next.autoTranslate.enabled = asBoolean(source.autoTranslate.enabled, next.autoTranslate.enabled);
+  }
+  // Skip-same-language is always on — it's built-in behaviour, not a user toggle.
+  next.autoTranslate.skipSameLanguage = true;
+
   if (isObject(source.sendBox)) {
     next.sendBox.x = Number.isFinite(source.sendBox.x) ? source.sendBox.x : next.sendBox.x;
     next.sendBox.y = Number.isFinite(source.sendBox.y) ? source.sendBox.y : next.sendBox.y;

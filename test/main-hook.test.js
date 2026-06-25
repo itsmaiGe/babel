@@ -381,3 +381,130 @@ test("openExternal opens only https links via the OS shell", async () => {
   assert.equal((await openExternal(electron, "javascript:alert(1)")).ok, false);
   assert.deepEqual(opened, ["https://x.com/unflwMaige"]);
 });
+
+test("translation cache persists to disk and reloads, capped in size", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { loadTranslationCache, saveTranslationCache, setElectronForTests } = require("../src/mod/main");
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-cache-"));
+  setElectronForTests({ app: { getPath: () => tmp } });
+  try {
+    assert.deepEqual(loadTranslationCache(), {});
+    saveTranslationCache({ a: "你好", b: "世界", junk: 123 });
+    const back = loadTranslationCache();
+    assert.equal(back.a, "你好");
+    assert.equal(back.b, "世界");
+    assert.equal("junk" in back, false); // non-string values dropped
+
+    const big = {};
+    for (let i = 0; i < 1500; i += 1) big["k" + i] = "v" + i;
+    const res = saveTranslationCache(big);
+    assert.equal(res.count, 1000); // capped
+    assert.equal(Object.keys(loadTranslationCache()).length, 1000);
+  } finally {
+    setElectronForTests(null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("compareVersions orders semantic versions numerically and ignores a v prefix", () => {
+  const { compareVersions } = require("../src/mod/main");
+  assert.equal(compareVersions("0.2.0", "0.1.0"), 1);
+  assert.equal(compareVersions("v0.1.0", "0.1.0"), 0);
+  assert.equal(compareVersions("0.1.0", "0.10.0"), -1);
+  assert.equal(compareVersions("1.0.0", "0.9.9"), 1);
+  assert.equal(compareVersions("0.1.0-beta", "0.1.0"), 0);
+});
+
+test("checkForUpdate flags a newer GitHub release and surfaces the download link", async () => {
+  const { checkForUpdate } = require("../src/mod/main");
+  const previousFetch = global.fetch;
+  let requestedUrl = "";
+  global.fetch = async (url, options) => {
+    requestedUrl = url;
+    assert.ok(options.headers["User-Agent"]);
+    return {
+      ok: true,
+      json: async () => ({ tag_name: "v9.9.9", html_url: "https://github.com/itsmaiGe/babel/releases/tag/v9.9.9" })
+    };
+  };
+  try {
+    const result = await checkForUpdate();
+    assert.ok(requestedUrl.includes("itsmaiGe/babel"));
+    assert.equal(result.ok, true);
+    assert.equal(result.updateAvailable, true);
+    assert.equal(result.latest, "9.9.9");
+    assert.ok(result.url.includes("github.com/itsmaiGe/babel"));
+  } finally {
+    if (previousFetch) global.fetch = previousFetch;
+    else delete global.fetch;
+  }
+});
+
+test("checkForUpdate reports no update when GitHub returns the current version, and fails quietly on errors", async () => {
+  const { checkForUpdate } = require("../src/mod/main");
+  const { BABEL_VERSION } = require("../src/shared/defaults");
+  const previousFetch = global.fetch;
+  try {
+    global.fetch = async () => ({ ok: true, json: async () => ({ tag_name: "v" + BABEL_VERSION }) });
+    const same = await checkForUpdate();
+    assert.equal(same.ok, true);
+    assert.equal(same.updateAvailable, false);
+
+    global.fetch = async () => { throw new Error("offline"); };
+    const offline = await checkForUpdate();
+    assert.equal(offline.ok, false);
+    assert.equal(offline.current, BABEL_VERSION);
+  } finally {
+    if (previousFetch) global.fetch = previousFetch;
+    else delete global.fetch;
+  }
+});
+
+test("bundled BABEL_VERSION stays in sync with package.json", () => {
+  const { BABEL_VERSION } = require("../src/shared/defaults");
+  const pkg = require("../package.json");
+  assert.equal(BABEL_VERSION, pkg.version);
+});
+
+test("translateWithSettings turns a request timeout into a clear, friendly message", async () => {
+  const { translateWithSettings } = require("../src/mod/main");
+  const previousFetch = global.fetch;
+  global.fetch = async () => {
+    const error = new Error("The operation was aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+  try {
+    const settings = normalizeSettings({ enabled: true, model: { provider: "openai" } });
+    await assert.rejects(
+      translateWithSettings({ direction: "read", text: "hello" }, settings, "sk-test"),
+      /翻译超时/
+    );
+  } finally {
+    if (previousFetch) global.fetch = previousFetch;
+    else delete global.fetch;
+  }
+});
+
+test("translateWithSettings turns a 'fetch failed' network error into a clear reason", async () => {
+  const { translateWithSettings } = require("../src/mod/main");
+  const previousFetch = global.fetch;
+  global.fetch = async () => {
+    const error = new TypeError("fetch failed");
+    error.cause = { code: "ENOTFOUND" };
+    throw error;
+  };
+  try {
+    const settings = normalizeSettings({ enabled: true, model: { provider: "openai" } });
+    await assert.rejects(
+      translateWithSettings({ direction: "read", text: "hello" }, settings, "sk-test"),
+      /网络连接失败.*DNS/
+    );
+  } finally {
+    if (previousFetch) global.fetch = previousFetch;
+    else delete global.fetch;
+  }
+});

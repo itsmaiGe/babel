@@ -2,6 +2,7 @@
 
 const { MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS } = requireShared("defaults");
 const { normalizeSettings } = requireShared("settings");
+const { textMatchesLanguage } = requireShared("language");
 
 const RUNTIME_FLAG = "__discordTranslatorModStarted";
 const SETTINGS_BUTTON_ID = "dtm-settings-button";
@@ -136,7 +137,12 @@ let settings = normalizeSettings({});
 let providerApiKeyStatus = {};
 let nativeError = "";
 let translationCache = new Map();
+let persistCacheTimer = 0;
 let dismissedTranslations = new Set();
+let updateInfo = null;
+let currentChannelId = "";
+let autoTranslateBaseline = new Map();
+let autoHandledMessages = new Set();
 let domHooksInstalled = false;
 let maintenanceScheduled = false;
 let subnavScrollLock = 0;
@@ -170,7 +176,53 @@ function start(api) {
 
   injectBaseStyles();
   installDomHooks();
-  loadSettingsSafe().then(runDomMaintenance);
+  loadSettingsSafe().then(loadPersistedCache).then(runDomMaintenance);
+  maybeCheckForUpdate();
+}
+
+function maybeCheckForUpdate() {
+  if (!nativeApi || typeof nativeApi.checkUpdate !== "function") return;
+  Promise.resolve(nativeApi.checkUpdate()).then(info => {
+    if (!info || !info.ok || !info.updateAvailable) return;
+    updateInfo = info;
+    // A gentle one-time toast; the persistent download link lives in the settings
+    // About footer so it's always reachable.
+    showNativeToast(`Babel 有新版本 v${info.latest}，可在设置底部下载更新`, "message");
+  }).catch(() => {});
+}
+
+async function loadPersistedCache() {
+  if (!settings || !settings.readTranslation.cache) return;
+  if (!nativeApi || typeof nativeApi.loadCache !== "function") return;
+  try {
+    const stored = await nativeApi.loadCache();
+    if (!stored || typeof stored !== "object") return;
+    for (const [key, value] of Object.entries(stored)) {
+      if (typeof value === "string") translationCache.set(key, value);
+    }
+    while (translationCache.size > MAX_TRANSLATION_CACHE) {
+      const oldest = translationCache.keys().next().value;
+      if (oldest === undefined) break;
+      translationCache.delete(oldest);
+    }
+  } catch (_error) {
+    // A missing/corrupt cache is non-fatal.
+  }
+}
+
+function schedulePersistCache() {
+  if (!settings || !settings.readTranslation.cache) return;
+  if (!nativeApi || typeof nativeApi.saveCache !== "function") return;
+  if (persistCacheTimer) return;
+  persistCacheTimer = setTimeout(() => {
+    persistCacheTimer = 0;
+    try {
+      nativeApi.saveCache(Object.fromEntries(translationCache));
+    } catch (_error) {
+      // Persisting the cache is best-effort.
+    }
+  }, 3000);
+  if (persistCacheTimer && typeof persistCacheTimer.unref === "function") persistCacheTimer.unref();
 }
 
 function installDomHooks() {
@@ -207,8 +259,16 @@ function runDomMaintenance() {
     restoreSettingsContent();
   }
 
+  syncCurrentChannel();
   ensureSendBox();
-  restoreVisibleTranslations();
+
+  // Both translation passes walk the visible-message list. Skip the DOM query
+  // entirely when neither is active, and otherwise query once and share it.
+  const cacheActive = Boolean(settings && settings.readTranslation.cache && translationCache.size > 0);
+  if (!cacheActive && !autoTranslateEnabled()) return;
+  const messages = visibleMessages();
+  restoreVisibleTranslations(messages);
+  runAutoTranslate(messages);
 }
 
 async function loadSettingsSafe() {
@@ -376,6 +436,11 @@ function injectBaseStyles() {
       text-decoration: none;
     }
     .dtm-about-link:hover { text-decoration: underline; }
+    .dtm-about-update {
+      margin-top: 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
   `;
   document.documentElement.appendChild(style);
 }
@@ -998,6 +1063,7 @@ function onDocumentClick(event) {
   if (!panel) return;
 
   const target = event.target instanceof Element ? event.target : null;
+
   if (!target || target.closest(`#${SETTINGS_PANEL_ID}, #${SETTINGS_BUTTON_ID}, [data-dtm-settings-subnav='true']`)) return;
   const sidebar = findSettingsSidebar();
   if (sidebar && sidebar.contains(target)) {
@@ -1150,6 +1216,7 @@ async function openSettingsPanel(options = {}) {
     section("翻译设置", [
       toggleRow("启用插件", formState.enabled, value => { formState.enabled = value; }),
       toggleRow("启用发送翻译输入框", formState.sendTranslation.enabled, value => { formState.sendTranslation.enabled = value; }),
+      toggleRow("自动翻译新消息", formState.autoTranslate.enabled, value => { formState.autoTranslate.enabled = value; }),
       languageSelectField("阅读目标语言", formState.model.targetLanguage, value => { formState.model.targetLanguage = value; }),
       languageSelectField("发送目标语言", formState.model.sendLanguage, value => { formState.model.sendLanguage = value; }),
       selectField("翻译风格", formState.translationStyle, TRANSLATION_STYLE_OPTIONS, value => { formState.translationStyle = value; })
@@ -1204,6 +1271,7 @@ async function openSettingsPanel(options = {}) {
       renderProviderSelect();
       renderApiKeyField();
       ensureSendBox();
+      applyAutoTranslateSettings();
       refreshTranslationStyles();
       save.flashLabel("已保存");
     } catch (error) {
@@ -1255,6 +1323,23 @@ function aboutFooter() {
   meta.appendChild(link);
 
   wrap.append(title, desc, why, meta);
+
+  if (updateInfo && updateInfo.updateAvailable) {
+    const update = div("dtm-about-update");
+    const updateLink = document.createElement("a");
+    updateLink.className = "dtm-about-link";
+    updateLink.textContent = `🎉 新版本 v${updateInfo.latest} 可用 · 点击下载`;
+    updateLink.href = updateInfo.url;
+    updateLink.setAttribute("role", "link");
+    updateLink.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (nativeApi && typeof nativeApi.openExternal === "function") nativeApi.openExternal(updateInfo.url);
+    });
+    update.appendChild(updateLink);
+    wrap.append(update);
+  }
+
   return wrap;
 }
 
@@ -1401,41 +1486,48 @@ function onMessageDoubleClick(event) {
   const message = findMessage(event.target);
   if (!message) return;
 
-  const existingTranslation = findTranslationBlock(message);
-  if (existingTranslation) {
+  if (findAnyTranslationBlock(message)) {
     event.preventDefault();
     event.stopPropagation();
-    existingTranslation.remove();
+    removeAllTranslations(message);
     // Remember the dismissal so periodic restore from cache doesn't bring it back.
     dismissedTranslations.add(getMessageId(message));
     return;
   }
 
-  const text = extractMessageText(message);
-  if (!text) return;
+  if (getMessageUnits(message).length === 0) return;
 
   event.preventDefault();
   event.stopPropagation();
 
   dismissedTranslations.delete(getMessageId(message));
-  translateMessage(message, text).catch(error => {
-    renderTranslation(message, publicError(error), true);
-  });
+  translateMessage(message).catch(() => {});
 }
 
-async function translateMessage(message, text) {
-  const key = getMessageCacheKey(message, text);
+async function translateMessage(message) {
+  for (const unit of getMessageUnits(message)) {
+    await translateUnit(message, unit);
+  }
+}
+
+async function translateUnit(message, unit) {
+  const key = getUnitCacheKey(message, unit);
   if (settings.readTranslation.cache && translationCache.has(key)) {
-    renderTranslation(message, translationCache.get(key), { cacheHit: true });
+    renderUnitTranslation(message, unit, translationCache.get(key), { cacheHit: true });
     return;
   }
 
-  const placeholder = renderTranslation(message, "正在翻译...", { cacheHit: false });
-  const result = await nativeApi.translate({ direction: "read", text });
-  cacheTranslation(key, result.text);
-  // If the user dismissed the in-progress block while we waited, don't resurrect it.
-  if (placeholder && !placeholder.parentElement) return;
-  renderTranslation(message, result.text, { cacheHit: false });
+  const placeholder = renderUnitTranslation(message, unit, "正在翻译...");
+  try {
+    const result = await nativeApi.translate({ direction: "read", text: unit.text });
+    cacheTranslation(key, result.text);
+    // If the user dismissed the in-progress block while we waited, don't resurrect it.
+    if (placeholder && !placeholder.parentElement) return;
+    renderUnitTranslation(message, unit, result.text);
+  } catch (error) {
+    if (placeholder && !placeholder.parentElement) return;
+    renderUnitTranslation(message, unit, publicError(error), { isError: true });
+  }
 }
 
 function cacheTranslation(key, text) {
@@ -1445,6 +1537,118 @@ function cacheTranslation(key, text) {
     const oldest = translationCache.keys().next().value;
     if (oldest === undefined) break;
     translationCache.delete(oldest);
+  }
+  schedulePersistCache();
+}
+
+// ---- Auto-translate ------------------------------------------------------------
+// A single global setting (设置页「自动翻译新消息」). It never translates retroactively:
+// the first time it runs in a channel it pins a baseline snowflake, and only messages
+// newer than that baseline are translated — so scrolling up through history, and the
+// existing backlog when you open a channel, are left untouched. The baseline is kept
+// per channel in memory so each channel only auto-translates its own new arrivals.
+
+function visibleMessages() {
+  return Array.from(document.querySelectorAll("[id^='chat-messages-'], [data-list-item-id*='chat-messages']"));
+}
+
+function getCurrentChannelId() {
+  const match = String((typeof location !== "undefined" && location.pathname) || "").match(/\/channels\/[^/]+\/(\d+)/);
+  return match ? match[1] : "";
+}
+
+function syncCurrentChannel() {
+  const id = getCurrentChannelId();
+  if (id === currentChannelId) return;
+  currentChannelId = id;
+}
+
+function messageSnowflake(message) {
+  // Discord ids look like "chat-messages-<channelId>-<messageId>"; the trailing
+  // long digit run is the message snowflake (monotonic with time).
+  const match = String(getMessageId(message)).match(/(\d{17,21})(?!.*\d)/);
+  return match ? match[1] : "";
+}
+
+function snowflakeGreater(a, b) {
+  if (!a) return false;
+  if (!b) return true;
+  if (a.length !== b.length) return a.length > b.length;
+  return a > b;
+}
+
+function currentMaxSnowflake(channelId, messages = visibleMessages()) {
+  let max = "";
+  for (const message of messages) {
+    // Only this channel's messages — during a channel switch the previous channel's
+    // rows can briefly linger and would otherwise poison the baseline.
+    if (channelId && getMessageId(message).indexOf(channelId) === -1) continue;
+    const snowflake = messageSnowflake(message);
+    if (snowflake && snowflakeGreater(snowflake, max)) max = snowflake;
+  }
+  return max;
+}
+
+function autoTranslateEnabled() {
+  return Boolean(settings && settings.enabled && settings.autoTranslate && settings.autoTranslate.enabled);
+}
+
+// Called after settings save: when auto-translate is turned off, forget the baselines
+// so re-enabling later starts fresh from "now" instead of replaying a backlog.
+function applyAutoTranslateSettings() {
+  if (autoTranslateEnabled()) return;
+  autoTranslateBaseline.clear();
+  autoHandledMessages.clear();
+}
+
+function shouldSkipSameLanguage(text) {
+  if (!settings.autoTranslate || settings.autoTranslate.skipSameLanguage === false) return false;
+  return textMatchesLanguage(text, settings.model.targetLanguage);
+}
+
+function runAutoTranslate(messages = visibleMessages()) {
+  if (!autoTranslateEnabled()) return;
+  const channelId = currentChannelId;
+  if (!channelId) return;
+
+  // First run in this channel: the current conversation is the baseline. Nothing is
+  // translated this tick; only messages newer than now get picked up afterwards.
+  if (!autoTranslateBaseline.has(channelId)) {
+    const baseline = currentMaxSnowflake(channelId, messages);
+    // Wait until the channel's messages have actually rendered before pinning the
+    // baseline. An empty baseline would later let the entire backlog translate
+    // retroactively — the one thing auto-translate must never do.
+    if (!baseline) return;
+    autoTranslateBaseline.set(channelId, baseline);
+    return;
+  }
+
+  const threshold = autoTranslateBaseline.get(channelId);
+  if (!threshold) return;
+  for (const message of messages) {
+    const id = getMessageId(message);
+    if (!id || autoHandledMessages.has(id)) continue;
+    // Belongs to this channel and is newer than the baseline.
+    if (id.indexOf(channelId) === -1) continue;
+    const snowflake = messageSnowflake(message);
+    if (!snowflake || !snowflakeGreater(snowflake, threshold)) continue;
+    if (dismissedTranslations.has(id)) continue;
+    if (findAnyTranslationBlock(message)) {
+      autoHandledMessages.add(id);
+      continue;
+    }
+    if (getMessageUnits(message).length === 0) continue;
+    autoHandledMessages.add(id);
+    autoTranslateMessage(message).catch(() => {});
+  }
+
+  if (autoHandledMessages.size > 4000) autoHandledMessages.clear();
+}
+
+async function autoTranslateMessage(message) {
+  for (const unit of getMessageUnits(message)) {
+    if (shouldSkipSameLanguage(unit.text)) continue;
+    await translateUnit(message, unit);
   }
 }
 
@@ -1459,66 +1663,120 @@ function findMessage(target) {
   return target.closest("[id^='chat-messages-'], [data-list-item-id*='chat-messages'], [class*='messageListItem']");
 }
 
-function extractMessageText(message) {
-  const content = message.querySelector("[id^='message-content-'], [class*='messageContent'], [class*='markup']");
-  return (content || message).textContent.trim();
+function messageContentEl(message, quote) {
+  // The actual message body. Query separately (not one comma selector) so a reply's
+  // quoted preview — which also has a [class*='markup'] earlier in the DOM — never
+  // wins, and explicitly skip anything inside the quote preview.
+  const insideQuote = el => Boolean(quote && el && typeof quote.contains === "function" && quote.contains(el));
+  const byId = message.querySelector("[id^='message-content-']");
+  if (byId && !insideQuote(byId)) return byId;
+  for (const el of Array.from(message.querySelectorAll("[class*='messageContent'], [class*='markup']"))) {
+    if (!insideQuote(el)) return el;
+  }
+  return null;
+}
+
+function replyQuoteEl(message) {
+  // The "replying to …" preview row (smaller text). Discord hashes class suffixes,
+  // so match on the stable id prefix / class substrings; best-effort + fail-safe.
+  return message.querySelector("[id^='message-reply-context-']")
+    || message.querySelector("[class*='repliedMessage']");
+}
+
+function unitText(el) {
+  return el ? String(el.textContent || "").trim() : "";
+}
+
+// A message is 1–2 translatable units: an optional quoted preview, plus the body.
+function getMessageUnits(message) {
+  const units = [];
+  const quote = replyQuoteEl(message);
+  if (quote) {
+    const quoteText = unitText(quote.querySelector("[class*='repliedTextContent'], [class*='repliedText']") || quote);
+    // The quote译文 is anchored right under the (block-level) preview row.
+    if (quoteText) units.push({ kind: "quote", anchor: quote, text: quoteText });
+  }
+  const bodyText = unitText(messageContentEl(message, quote)) || (quote ? "" : unitText(message));
+  // The body译文 always appends to the bottom of the message — a safe, block-level
+  // spot — never anchored to the (possibly inline) content element.
+  if (bodyText) units.push({ kind: "content", anchor: null, text: bodyText });
+  return units;
 }
 
 function getMessageId(message) {
   return message.getAttribute("id") || message.getAttribute("data-list-item-id") || "";
 }
 
-function getMessageCacheKey(message, text) {
-  return `${getMessageId(message)}:${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${hashText(text)}`;
+function getUnitCacheKey(message, unit) {
+  return `${getMessageId(message)}:${unit.kind}:${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${hashText(unit.text)}`;
 }
 
-function findTranslationBlock(message) {
-  if (!message) return null;
-  for (const child of Array.from(message.children || [])) {
-    if (child.classList && child.classList.contains("dtm-translation-block")) return child;
-    if (String(child.className || "").split(/\s+/).includes("dtm-translation-block")) return child;
+function findUnitBlock(message, kind) {
+  for (const block of Array.from(message.querySelectorAll(".dtm-translation-block"))) {
+    if (block.dataset && block.dataset.dtmUnit === kind) return block;
   }
   return null;
 }
 
-function renderTranslation(message, text, options = {}) {
-  const isError = Boolean(options === true || options.isError);
-  const existing = findTranslationBlock(message);
-  const block = existing || document.createElement("div");
-  block.className = "dtm-translation-block";
+function findAnyTranslationBlock(message) {
+  return message ? message.querySelector(".dtm-translation-block") : null;
+}
+
+function removeAllTranslations(message) {
+  for (const block of Array.from(message.querySelectorAll(".dtm-translation-block"))) block.remove();
+}
+
+function renderUnitTranslation(message, unit, text, options = {}) {
+  const isError = Boolean(options.isError);
+  let block = findUnitBlock(message, unit.kind);
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "dtm-translation-block";
+    block.dataset.dtmUnit = unit.kind;
+    // Place the译文 right under its own source (quote under the quote, body under
+    // the body) instead of always at the bottom of the message.
+    if (unit.anchor && typeof unit.anchor.insertAdjacentElement === "function" && unit.anchor.parentElement) {
+      unit.anchor.insertAdjacentElement("afterend", block);
+    } else {
+      message.appendChild(block);
+    }
+  }
   block.dataset.dtmError = isError ? "true" : "false";
   block.dataset.dtmCacheHit = options.cacheHit ? "true" : "false";
   block.textContent = text;
-  applyTranslationStyle(block);
-
-  if (!existing) message.appendChild(block);
+  applyTranslationStyle(block, unit.kind === "quote");
   return block;
 }
 
-function restoreVisibleTranslations() {
+function restoreVisibleTranslations(messages = visibleMessages()) {
   if (!settings || !settings.readTranslation.cache || translationCache.size === 0) return;
-  const messages = Array.from(document.querySelectorAll("[id^='chat-messages-'], [data-list-item-id*='chat-messages']"));
   for (const message of messages) {
-    if (findTranslationBlock(message)) continue;
     if (dismissedTranslations.has(getMessageId(message))) continue;
-    const text = extractMessageText(message);
-    const key = getMessageCacheKey(message, text);
-    if (translationCache.has(key)) renderTranslation(message, translationCache.get(key), { cacheHit: true });
+    for (const unit of getMessageUnits(message)) {
+      if (findUnitBlock(message, unit.kind)) continue;
+      const key = getUnitCacheKey(message, unit);
+      if (translationCache.has(key)) renderUnitTranslation(message, unit, translationCache.get(key), { cacheHit: true });
+    }
   }
 }
 
 function refreshTranslationStyles() {
   for (const block of document.querySelectorAll(".dtm-translation-block")) {
-    applyTranslationStyle(block);
+    applyTranslationStyle(block, block.dataset.dtmUnit === "quote");
   }
 }
 
-function applyTranslationStyle(block) {
-  applyTranslationStyleObject(block, settings.style, block.dataset.dtmError === "true");
+function applyTranslationStyle(block, small) {
+  applyTranslationStyleObject(block, settings.style, block.dataset.dtmError === "true", small);
 }
 
-function applyTranslationStyleObject(block, style, isError) {
+function applyTranslationStyleObject(block, style, isError, small) {
   Object.assign(block.style, translationPreviewStyle(style, isError));
+  if (small) {
+    // The quoted message is shown small in Discord, so its译文 matches.
+    const fontSize = Number(style.fontSize) || 14;
+    block.style.fontSize = `${Math.max(11, Math.round(fontSize * 0.78))}px`;
+  }
 }
 
 const STYLE_MARKER_BAND = "linear-gradient(transparent 54%, color-mix(in srgb, currentColor 24%, transparent) 54%, color-mix(in srgb, currentColor 24%, transparent) 92%, transparent 92%)";
@@ -1562,7 +1820,8 @@ function ensureSendBox() {
 
   // The box lives on the document root as a fixed overlay, never inside Discord's
   // React-managed composer tree, so it can't crash the native input. We still read
-  // the composer to detect the active view and compute the default position.
+  // the composer to detect the active view and compute the default position. It only
+  // appears when send-translation is enabled — users who don't need it see nothing.
   const editor = findDiscordEditor();
   const mount = editor ? findDiscordComposerMount(editor) : null;
   if (!mount) {
@@ -1607,7 +1866,6 @@ function createSendBox() {
 
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = `翻译成${settings.model.sendLanguage}并发送`;
   input.setAttribute("aria-label", "翻译发送输入框");
 
   const status = document.createElement("span");
@@ -2313,6 +2571,9 @@ function setRuntimeForTests(runtime) {
   if (runtime && Object.prototype.hasOwnProperty.call(runtime, "nativeError")) nativeError = String(runtime.nativeError || "");
   translationCache = new Map();
   dismissedTranslations = new Set();
+  currentChannelId = runtime && runtime.channelId ? String(runtime.channelId) : "";
+  autoTranslateBaseline = new Map();
+  autoHandledMessages = new Set();
 }
 
 function resetRuntimeForTests() {
@@ -2354,6 +2615,12 @@ module.exports.__test = {
   syncSettingsSubnavToScroll,
   translateMessage,
   translationPreviewStyle,
-  toggleRow
+  toggleRow,
+  applyAutoTranslateSettings,
+  getCurrentChannelId,
+  messageSnowflake,
+  runAutoTranslate,
+  shouldSkipSameLanguage,
+  snowflakeGreater
 };
 /* @dtm-test-only:end */

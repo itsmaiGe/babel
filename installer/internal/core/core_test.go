@@ -54,6 +54,15 @@ func TestResolveCoreDirPicksNewestVersion(t *testing.T) {
 
 func TestInstallThenUninstallRoundTrips(t *testing.T) {
 	base := fakeDiscord(t, "1.0.0")
+	// Redirect the config store to a temp dir so the test never deletes the real
+	// user config, and so we can assert uninstall wipes it.
+	configStore := filepath.Join(t.TempDir(), "babel-store")
+	t.Setenv("BABEL_CONFIG_DIR", configStore)
+	if err := os.MkdirAll(configStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(configStore, "api-keys.json"), "{}")
+
 	core, _ := ResolveCoreDir(base)
 	indexPath := filepath.Join(core, "index.js")
 
@@ -87,6 +96,9 @@ func TestInstallThenUninstallRoundTrips(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(core, PayloadDirName)); err == nil {
 		t.Fatal("payload not removed")
+	}
+	if _, err := os.Stat(configStore); err == nil {
+		t.Fatal("config store (api keys / settings) not removed on uninstall")
 	}
 }
 

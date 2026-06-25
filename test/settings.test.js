@@ -14,7 +14,19 @@ test("normalizeSettings fills missing values with safe defaults", () => {
   assert.equal(settings.model.baseUrl, DEFAULT_SETTINGS.model.baseUrl);
   assert.equal(settings.readTranslation.enabled, true);
   assert.equal(settings.sendTranslation.enabled, false);
+  assert.equal(settings.autoTranslate.enabled, false);
+  assert.equal(settings.autoTranslate.skipSameLanguage, true);
   assert.equal(settings.translationStyle, DEFAULT_SETTINGS.translationStyle);
+});
+
+test("normalizeSettings honors the auto-translate switch and forces skip-same-language on", () => {
+  const on = normalizeSettings({ autoTranslate: { enabled: true } });
+  assert.equal(on.autoTranslate.enabled, true);
+  // Skip-same-language is always on — not user-configurable — even if stored false.
+  assert.equal(on.autoTranslate.skipSameLanguage, true);
+  assert.equal(normalizeSettings({ autoTranslate: { enabled: true, skipSameLanguage: false } }).autoTranslate.skipSameLanguage, true);
+  assert.equal(normalizeSettings({ autoTranslate: { enabled: "yes" } }).autoTranslate.enabled, false);
+  assert.equal(normalizeSettings({}).autoTranslate.skipSameLanguage, true);
 });
 
 test("normalizeSettings keeps double click translation enabled with the plugin", () => {

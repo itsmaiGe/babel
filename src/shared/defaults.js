@@ -1,5 +1,8 @@
 "use strict";
 
+// Keep in sync with package.json "version". Used for the GitHub update check.
+const BABEL_VERSION = "0.1.0";
+
 const DEFAULT_TRANSLATION_PROMPT = [
   "你是 Discord 聊天翻译器。",
   "把用户给出的 Discord 文本翻译成{{targetLanguage}}。",
@@ -160,6 +163,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     enabled: false,
     enterToSend: true
   },
+  autoTranslate: {
+    enabled: false,
+    skipSameLanguage: true
+  },
   sendBox: {
     x: null,
     y: null,
@@ -178,6 +185,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 module.exports = {
+  BABEL_VERSION,
   DEFAULT_TRANSLATION_PROMPT,
   MODEL_PROVIDERS,
   TRANSLATION_STYLE_PRESETS,

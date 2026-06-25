@@ -28,13 +28,27 @@ var (
 	vanillaRe  = regexp.MustCompile(`^\s*module\.exports\s*=\s*require\(["']\./core\.asar["']\);\s*$`)
 )
 
-// DiscordBaseDir returns the platform Discord user-data directory.
+// DiscordBaseDir returns the platform Discord modules directory (Local on Windows).
 func DiscordBaseDir() string {
 	if v := os.Getenv("LOCALAPPDATA"); v != "" {
 		return filepath.Join(v, "Discord")
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "AppData", "Local", "Discord")
+}
+
+// ConfigStoreDir returns the plugin's config directory (settings.json, api-keys.json,
+// cache.json). It lives under Electron's userData dir (Roaming on Windows), which is
+// NOT the same as the Discord modules dir (Local) used for patching.
+func ConfigStoreDir() string {
+	if v := os.Getenv("BABEL_CONFIG_DIR"); v != "" {
+		return v
+	}
+	if v := os.Getenv("APPDATA"); v != "" {
+		return filepath.Join(v, "discord", PayloadDirName)
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "AppData", "Roaming", "discord", PayloadDirName)
 }
 
 func fileExists(p string) bool {
@@ -231,5 +245,13 @@ func Uninstall(baseDir string) (string, error) {
 			}
 		}
 	}
+
+	// Wipe the user's stored config (settings, API keys, cache) so nothing is left behind.
+	if store := ConfigStoreDir(); fileExists(store) {
+		if err := os.RemoveAll(store); err == nil {
+			changed++
+		}
+	}
+
 	return fmt.Sprintf("Removed Babel from %d desktop core item(s).", changed), nil
 }
