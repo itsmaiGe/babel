@@ -1,9 +1,9 @@
 name: Build installers
 
 # Builds, in the cloud:
-#   - macOS:   Babel Manager.app (Cocoa GUI) + a no-Node script fallback zip
-#   - Windows: Babel-Installer.exe (Go + giu GUI) + a no-Node script fallback zip
-# On a tag push (vX.Y.Z) it also publishes a GitHub Release with all artifacts.
+#   - macOS:   Babel Manager.dmg (Cocoa GUI)
+#   - Windows: Babel-Installer.exe (Go + giu GUI)
+# On a tag push (vX.Y.Z) it also publishes a GitHub Release with both artifacts.
 
 on:
   push:
@@ -28,9 +28,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: babel-mac
-          path: |
-            dist/Babel Manager.zip
-            dist/Babel-Windows.zip
+          path: dist/Babel Manager.dmg
           if-no-files-found: error
 
   build-windows-exe:
@@ -81,8 +79,7 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             "artifacts/babel-windows-exe/Babel-Installer.exe" \
-            "artifacts/babel-mac/Babel Manager.zip" \
-            "artifacts/babel-mac/Babel-Windows.zip" \
+            "artifacts/babel-mac/Babel Manager.dmg" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "Babel ${GITHUB_REF_NAME}" \
-            --notes "macOS: Babel Manager.zip. Windows: Babel-Installer.exe (or the no-Node Babel-Windows.zip). Fully quit and reopen Discord after installing."
+            --notes "Windows：下载 Babel-Installer.exe，双击运行后点「安装」。macOS：下载 Babel Manager.dmg，打开后运行 Babel Manager 点 Install。安装后请彻底退出 Discord（托盘 > 退出 Discord）再重新打开。"

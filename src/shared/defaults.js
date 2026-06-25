@@ -1,7 +1,7 @@
 "use strict";
 
 // Keep in sync with package.json "version". Used for the GitHub update check.
-const BABEL_VERSION = "0.1.1";
+const BABEL_VERSION = "0.1.2";
 
 const DEFAULT_TRANSLATION_PROMPT = [
   "你是 Discord 聊天翻译器。",

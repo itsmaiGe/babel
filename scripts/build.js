@@ -17,31 +17,12 @@ function main() {
   const buildRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-manager-build-"));
   try {
     const appDir = createManagerApp(buildRoot);
-    copyAppBundle(appDir, path.join(DIST_DIR, `${MANAGER_NAME}.app`));
-    packageCommandApp(appDir, MANAGER_NAME);
+    packageDmg(appDir, MANAGER_NAME);
   } finally {
     fs.rmSync(buildRoot, { recursive: true, force: true });
   }
 
-  buildWindowsDist();
-
-  console.log(`Built macOS app and Windows package in ${DIST_DIR}`);
-}
-
-function buildWindowsDist() {
-  const stageDir = path.join(DIST_DIR, "Babel-Windows");
-  const payloadDir = path.join(stageDir, "payload");
-
-  for (const name of ["Babel.bat", "Babel-Manager.ps1", "Install-Babel.ps1", "Uninstall-Babel.ps1"]) {
-    copyFile(path.join(PROJECT_ROOT, "scripts", "windows", name), path.join(stageDir, name));
-  }
-  copyFile(path.join(PROJECT_ROOT, "assets", "babel.ico"), path.join(stageDir, "babel.ico"));
-  copyStripped(path.join(PROJECT_ROOT, "src", "mod", "main.js"), path.join(payloadDir, "mod", "main.js"));
-  copyFile(path.join(PROJECT_ROOT, "src", "mod", "preload.js"), path.join(payloadDir, "mod", "preload.js"));
-  copyStripped(path.join(PROJECT_ROOT, "src", "mod", "renderer.js"), path.join(payloadDir, "mod", "renderer.js"));
-  copyDirectory(path.join(PROJECT_ROOT, "src", "shared"), path.join(payloadDir, "shared"));
-
-  childProcess.execFileSync("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--keepParent", stageDir, path.join(DIST_DIR, "Babel-Windows.zip")], { stdio: "pipe" });
+  console.log(`Built macOS .dmg in ${DIST_DIR}`);
 }
 
 function createManagerApp(buildRoot) {
@@ -83,18 +64,28 @@ function createManagerApp(buildRoot) {
   return appDir;
 }
 
-function packageCommandApp(appDir, name) {
-  const zipPath = path.join(DIST_DIR, `${name}.zip`);
+function packageDmg(appDir, name) {
+  // Stage the .app alongside an /Applications shortcut, then pack into a compressed
+  // dmg — the standard, drag-to-install macOS distribution format.
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-dmg-stage-"));
+  try {
+    clearExtendedAttributes(appDir);
+    childProcess.execFileSync("/usr/bin/ditto", ["--norsrc", "--noextattr", appDir, path.join(stageDir, `${name}.app`)], { stdio: "pipe" });
+    childProcess.execFileSync("/bin/ln", ["-s", "/Applications", path.join(stageDir, "Applications")], { stdio: "pipe" });
 
-  clearExtendedAttributes(appDir);
-  childProcess.execFileSync("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", "--keepParent", appDir, zipPath], {
-    stdio: "pipe"
-  });
-}
-
-function copyAppBundle(source, dest) {
-  fs.rmSync(dest, { recursive: true, force: true });
-  childProcess.execFileSync("/usr/bin/ditto", ["--norsrc", "--noextattr", source, dest], { stdio: "pipe" });
+    const dmgPath = path.join(DIST_DIR, `${name}.dmg`);
+    fs.rmSync(dmgPath, { force: true });
+    childProcess.execFileSync("/usr/bin/hdiutil", [
+      "create",
+      "-volname", name,
+      "-srcfolder", stageDir,
+      "-ov",
+      "-format", "UDZO",
+      dmgPath
+    ], { stdio: "pipe" });
+  } finally {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+  }
 }
 
 function clearExtendedAttributes(target) {
