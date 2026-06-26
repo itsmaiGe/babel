@@ -17,15 +17,17 @@ import (
 const (
 	// LoaderMarker must match the JS installer so install/uninstall interoperate.
 	LoaderMarker   = "DiscordTranslatorMod desktop-core loader"
+	BlockStart     = "/* " + LoaderMarker + ":start */"
+	BlockEnd       = "/* " + LoaderMarker + ":end */"
 	PayloadDirName = "discord-translator-mod"
 	BackupName     = "index.js.dtm-original"
 	VanillaIndex   = "module.exports = require('./core.asar');\n"
 )
 
 var (
-	appDirRe   = regexp.MustCompile(`^app-(\d+)\.(\d+)\.(\d+)$`)
-	coreWrapRe = regexp.MustCompile(`^discord_desktop_core-(\d+)$`)
-	vanillaRe  = regexp.MustCompile(`^\s*module\.exports\s*=\s*require\(["']\./core\.asar["']\);\s*$`)
+	appDirRe      = regexp.MustCompile(`^app-(\d+)\.(\d+)\.(\d+)$`)
+	coreWrapRe    = regexp.MustCompile(`^discord_desktop_core-(\d+)$`)
+	babelBlockRe  = regexp.MustCompile("(?s)" + regexp.QuoteMeta(BlockStart) + ".*?" + regexp.QuoteMeta(BlockEnd) + "\\n?")
 )
 
 // DiscordBaseDir returns the platform Discord modules directory (Local on Windows).
@@ -138,14 +140,37 @@ func ResolveCoreDir(baseDir string) (string, error) {
 	return dirs[0], nil
 }
 
-func loaderIndex() string {
-	return "/* " + LoaderMarker + " */\n" +
+// baseIndex returns the index content with any Babel hook removed — what we preserve
+// and re-prepend (keeping BetterDiscord/Vencord and the core.asar export).
+func baseIndex(content string) string {
+	if strings.Contains(content, BlockStart) {
+		return normalizeIndex(babelBlockRe.ReplaceAllString(content, ""))
+	}
+	if strings.Contains(content, LoaderMarker) {
+		// Legacy whole-file loader replaced everything; its true base was always vanilla.
+		return VanillaIndex
+	}
+	return normalizeIndex(content)
+}
+
+func normalizeIndex(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return VanillaIndex
+	}
+	return trimmed + "\n"
+}
+
+// loaderBlock is our hook, wrapped in try/catch (a payload failure can never break
+// Discord) and fenced by start/end markers so it can be stripped back out on uninstall.
+func loaderBlock() string {
+	return BlockStart + "\n" +
 		"try {\n" +
 		"  require(\"./" + PayloadDirName + "/main.js\").install();\n" +
 		"} catch (error) {\n" +
 		"  console.error(\"[Babel] Failed to install hook:\", error);\n" +
 		"}\n" +
-		"module.exports = require(\"./core.asar\");\n"
+		BlockEnd + "\n"
 }
 
 func copyPayload(payload fs.FS, dest string) error {
@@ -190,20 +215,33 @@ func Install(baseDir string, payload fs.FS) (string, error) {
 		current = string(b)
 	}
 
-	if !fileExists(backupPath) {
-		if !vanillaRe.MatchString(current) && !strings.Contains(current, LoaderMarker) {
-			return "", fmt.Errorf("refusing to overwrite an unknown Discord core index at %s", indexPath)
+	// For the legacy whole-file loader, recover from the pre-Babel backup if present —
+	// it may hold BetterDiscord's injection the old loader clobbered.
+	legacyFormat := strings.Contains(current, LoaderMarker) && !strings.Contains(current, BlockStart)
+	source := current
+	if legacyFormat && fileExists(backupPath) {
+		if b, err := os.ReadFile(backupPath); err == nil {
+			source = string(b)
 		}
-		if err := os.WriteFile(backupPath, []byte(current), 0o644); err != nil {
-			return "", err
-		}
+	}
+	base := baseIndex(source)
+
+	// Only patch a recognizable Discord core index (one that loads core.asar); refusing
+	// here keeps us from prepending to a corrupt/unexpected file and bricking it.
+	if !strings.Contains(base, "core.asar") {
+		return "", fmt.Errorf("refusing to patch an unrecognized Discord core index at %s", indexPath)
 	}
 
 	if err := copyPayload(payload, payloadDest); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(indexPath, []byte(loaderIndex()), 0o644); err != nil {
+	// Additive: our delimited hook first, then the preserved base (other injectors +
+	// core export). Coexists with BetterDiscord/Vencord regardless of install order.
+	if err := os.WriteFile(indexPath, []byte(loaderBlock()+base), 0o644); err != nil {
 		return "", err
+	}
+	if fileExists(backupPath) {
+		os.Remove(backupPath)
 	}
 
 	return "Installed Babel into:\n" + core, nil
@@ -226,17 +264,27 @@ func Uninstall(baseDir string) (string, error) {
 			current = string(b)
 		}
 
-		if fileExists(backupPath) {
-			if b, err := os.ReadFile(backupPath); err == nil {
-				if err := os.WriteFile(indexPath, b, 0o644); err == nil {
-					os.Remove(backupPath)
-					changed++
-				}
-			}
-		} else if strings.Contains(current, LoaderMarker) {
-			if err := os.WriteFile(indexPath, []byte(VanillaIndex), 0o644); err == nil {
+		if strings.Contains(current, BlockStart) {
+			// New format: strip only our block; keep any other injector + the core export.
+			if err := os.WriteFile(indexPath, []byte(baseIndex(current)), 0o644); err == nil {
 				changed++
 			}
+		} else if strings.Contains(current, LoaderMarker) {
+			// Legacy whole-file loader: restore the pre-Babel backup if present (may hold
+			// BetterDiscord); otherwise fall back to vanilla.
+			if fileExists(backupPath) {
+				if b, err := os.ReadFile(backupPath); err == nil {
+					if err := os.WriteFile(indexPath, b, 0o644); err == nil {
+						changed++
+					}
+				}
+			} else if err := os.WriteFile(indexPath, []byte(VanillaIndex), 0o644); err == nil {
+				changed++
+			}
+		}
+
+		if fileExists(backupPath) {
+			os.Remove(backupPath)
 		}
 
 		if fileExists(payloadDest) {

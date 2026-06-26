@@ -1,6 +1,6 @@
 {
   "name": "babel",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Babel — a lightweight Discord translator plugin (双击即译 / 输入即译) for macOS and Windows.",
   "author": "麦格 (Maige) (https://x.com/unflwMaige)",

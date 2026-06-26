@@ -16,10 +16,32 @@ param(
 $ErrorActionPreference = "Stop"
 
 $LoaderMarker   = "DiscordTranslatorMod desktop-core loader"
+$BlockStart     = "/* $LoaderMarker:start */"
+$BlockEnd       = "/* $LoaderMarker:end */"
 $PayloadDirName = "discord-translator-mod"
 $BackupName     = "index.js.dtm-original"
 $VanillaIndex   = "module.exports = require('./core.asar');`n"
 $TestOnlyPattern = '(?s)/\* @dtm-test-only:start.*?@dtm-test-only:end \*/\r?\n?'
+$BlockPattern   = "(?s)" + [regex]::Escape($BlockStart) + ".*?" + [regex]::Escape($BlockEnd) + "\r?\n?"
+
+function Get-NormalizedIndex {
+  param([string]$content)
+  $trimmed = $content.Trim()
+  if ($trimmed -eq "") { return $VanillaIndex }
+  return $trimmed + "`n"
+}
+
+# The index content with any Babel hook removed — what we preserve and re-prepend.
+function Get-BaseIndex {
+  param([string]$content)
+  if ($content.Contains($BlockStart)) {
+    return Get-NormalizedIndex ([regex]::Replace($content, $BlockPattern, ""))
+  }
+  if ($content.Contains($LoaderMarker)) {
+    return $VanillaIndex   # legacy whole-file loader; its base was always vanilla
+  }
+  return Get-NormalizedIndex $content
+}
 
 if (-not $PayloadSource) {
   $packaged = Join-Path $PSScriptRoot "payload"
@@ -75,25 +97,36 @@ $backupPath = Join-Path $core $BackupName
 $payloadDest = Join-Path $core $PayloadDirName
 
 $currentIndex = if (Test-Path $indexPath) { Get-Content -Raw $indexPath } else { $VanillaIndex }
+$currentIndex = [string]$currentIndex
 
-if (-not (Test-Path $backupPath)) {
-  $isVanilla = $currentIndex -match '^\s*module\.exports\s*=\s*require\(["'']\./core\.asar["'']\);\s*$'
-  if (-not $isVanilla -and ($currentIndex -notlike "*$LoaderMarker*")) {
-    throw "Refusing to overwrite an unknown Discord core index at $indexPath"
-  }
-  Set-Content -NoNewline -Path $backupPath -Value $currentIndex
+# For the legacy whole-file loader, recover from the pre-Babel backup if present — it
+# may hold BetterDiscord's injection the old loader clobbered.
+$legacyFormat = $currentIndex.Contains($LoaderMarker) -and (-not $currentIndex.Contains($BlockStart))
+$source = $currentIndex
+if ($legacyFormat -and (Test-Path $backupPath)) {
+  $source = [string](Get-Content -Raw $backupPath)
+}
+$base = Get-BaseIndex $source
+
+# Only patch a recognizable Discord core index (one that loads core.asar).
+if (-not $base.Contains("core.asar")) {
+  throw "Refusing to patch an unrecognized Discord core index at $indexPath"
 }
 
 Copy-Payload -source $PayloadSource -dest $payloadDest
 
-$loader = "/* $LoaderMarker */`n" +
+# Additive: our delimited hook first, then the preserved base (other injectors + core).
+$loaderBlock = "$BlockStart`n" +
   "try {`n" +
   "  require(`"./$PayloadDirName/main.js`").install();`n" +
   "} catch (error) {`n" +
   "  console.error(`"[Babel] Failed to install hook:`", error);`n" +
   "}`n" +
-  "module.exports = require(`"./core.asar`");`n"
-Set-Content -NoNewline -Path $indexPath -Value $loader
+  "$BlockEnd`n"
+Set-Content -NoNewline -Path $indexPath -Value ($loaderBlock + $base)
+
+# The strip-based uninstall no longer needs a backup; drop any stale one.
+if (Test-Path $backupPath) { Remove-Item -Force $backupPath }
 
 Write-Host "Installed Babel into $core"
 Write-Host "Now fully quit Discord (right-click the tray icon > Quit Discord) and reopen it."

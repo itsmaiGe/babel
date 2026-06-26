@@ -1042,10 +1042,11 @@ test("UI polish fixes are wired at their key nodes", () => {
   // never matching the (user-configurable) translation bubble background.
   assert.ok(source.includes("function applyComposerBackground"));
 
-  // Double-click hide is remembered so cache-restore does not bring it back.
+  // Double-click hide is remembered so cache-restore does not bring it back, and restore
+  // only ever acts on messages the user actually translated (no cross-message bleed).
   assert.ok(source.includes("dismissedTranslations.add(getMessageId(message))"));
   assert.ok(source.includes("dismissedTranslations.delete(getMessageId(message))"));
-  assert.ok(source.includes("if (dismissedTranslations.has(getMessageId(message))) continue;"));
+  assert.ok(source.includes("if (!translatedMessages.has(id) || dismissedTranslations.has(id)) continue;"));
 
   // Save shows a transient checkmark on the button, with no toast or spinner.
   assert.ok(source.includes("host.flashLabel"));
@@ -1758,6 +1759,213 @@ test("auto-translate never translates the backlog when messages render after it 
     assert.equal(requests, 1);
     assert.equal(fresh.querySelectorAll(".dtm-translation-block").length, 1);
     assert.equal(backlogA.querySelectorAll(".dtm-translation-block").length, 0);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("cache is keyed by text, so identical text in different messages hits the model once", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  // Two DIFFERENT messages (different ids) with the SAME text.
+  const a = new FakeElement("div", "", rect(0, 0, 600, 80));
+  a.id = "chat-messages-1-1000000000000000000";
+  const ac = new FakeElement("div", "lol", rect(0, 0, 400, 24));
+  ac.className = "messageContent__a";
+  a.appendChild(ac);
+  const b = new FakeElement("div", "", rect(0, 0, 600, 80));
+  b.id = "chat-messages-1-2000000000000000000";
+  const bc = new FakeElement("div", "lol", rect(0, 0, 400, 24));
+  bc.className = "messageContent__b";
+  b.appendChild(bc);
+  document.append(a, b);
+
+  let requests = 0;
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        model: { targetLanguage: "简体中文" }
+      },
+      nativeApi: { translate: async () => { requests += 1; return { ok: true, text: "笑死" }; } }
+    });
+
+    await __test.translateMessage(a);
+    await __test.translateMessage(b);
+
+    assert.equal(requests, 1); // second message's identical text was served from cache
+    assert.equal(a.querySelectorAll(".dtm-translation-block")[0].textContent, "笑死");
+    assert.equal(b.querySelectorAll(".dtm-translation-block")[0].textContent, "笑死");
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+function waitMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+test("auto-translate caps concurrent model calls via the queue", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  document.appendChild(chatMessage("q", "5000000000000000000", "baseline"));
+
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      channelId: "q",
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        autoTranslate: { enabled: true },
+        model: { targetLanguage: "简体中文" }
+      },
+      nativeApi: {
+        translate: () => {
+          calls += 1;
+          active += 1;
+          peak = Math.max(peak, active);
+          return new Promise(resolve => setTimeout(() => { active -= 1; resolve({ ok: true, text: "T" }); }, 5));
+        }
+      }
+    });
+
+    __test.runAutoTranslate();            // pins the baseline
+    for (let i = 0; i < 6; i += 1) {
+      document.appendChild(chatMessage("q", "600000000000000000" + i, "msg" + i));
+    }
+    __test.runAutoTranslate();            // enqueues all six
+    await waitMs(120);
+
+    assert.equal(calls, 6);               // every new message was translated
+    assert.ok(peak <= 2, `peak concurrency ${peak} should be <= 2`);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("translating a reply does not bleed its translation onto the original quoted message", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+
+  // The original standalone message, whose text equals the reply's quoted preview.
+  const original = new FakeElement("div", "", rect(0, 0, 600, 40));
+  original.id = "chat-messages-100-1000000000000000000";
+  const originalContent = new FakeElement("div", "original quoted text", rect(0, 0, 400, 24));
+  originalContent.className = "messageContent__o";
+  original.appendChild(originalContent);
+
+  // The reply: a quoted preview (same text) plus its own body.
+  const reply = new FakeElement("div", "", rect(0, 50, 600, 120));
+  reply.id = "chat-messages-100-2000000000000000000";
+  const quote = new FakeElement("div", "", rect(0, 50, 400, 20));
+  quote.className = "repliedMessage__r";
+  const quoteText = new FakeElement("div", "original quoted text", rect(0, 50, 380, 16));
+  quoteText.className = "repliedTextContent__r";
+  quote.appendChild(quoteText);
+  const replyBody = new FakeElement("div", "my reply body", rect(0, 74, 400, 24));
+  replyBody.className = "messageContent__r";
+  reply.append(quote, replyBody);
+
+  document.append(original, reply);
+
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      settings: { enabled: true, readTranslation: { enabled: true, cache: true }, model: { targetLanguage: "简体中文" } },
+      nativeApi: { translate: async ({ text }) => ({ ok: true, text: "T:" + text }) }
+    });
+
+    // Only the reply is translated (2 blocks: quote + body).
+    await __test.translateMessage(reply);
+    assert.equal(reply.querySelectorAll(".dtm-translation-block").length, 2);
+
+    // The cache now holds the quote text's translation. A restore pass must NOT add a
+    // block to the original message just because it shares that text.
+    __test.restoreVisibleTranslations();
+    assert.equal(original.querySelectorAll(".dtm-translation-block").length, 0);
+    assert.equal(reply.querySelectorAll(".dtm-translation-block").length, 2);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
+test("pre-translating the quoted original still lets a later double-click translate the reply body", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+
+  const original = new FakeElement("div", "", rect(0, 0, 600, 40));
+  original.id = "chat-messages-100-1000000000000000000";
+  const originalContent = new FakeElement("div", "hello", rect(0, 0, 400, 24));
+  originalContent.className = "messageContent__o";
+  original.appendChild(originalContent);
+
+  const reply = new FakeElement("div", "", rect(0, 50, 600, 120));
+  reply.id = "chat-messages-100-2000000000000000000";
+  const quote = new FakeElement("div", "", rect(0, 50, 400, 20));
+  quote.className = "repliedMessage__r";
+  const quoteText = new FakeElement("div", "hello", rect(0, 50, 380, 16));
+  quoteText.className = "repliedTextContent__r";
+  quote.appendChild(quoteText);
+  const replyBody = new FakeElement("div", "my reply body", rect(0, 74, 400, 24));
+  replyBody.className = "messageContent__r";
+  reply.append(quote, replyBody);
+
+  document.append(original, reply);
+
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      settings: { enabled: true, readTranslation: { enabled: true, cache: true }, model: { targetLanguage: "简体中文" } },
+      nativeApi: { translate: async ({ text }) => ({ ok: true, text: "T:" + text }) }
+    });
+
+    // 1) Translate the original (quoted) message first → caches "hello".
+    await __test.translateMessage(original);
+    // A maintenance/restore pass — must NOT pre-seed a block onto the reply.
+    __test.restoreVisibleTranslations();
+    assert.equal(reply.querySelectorAll(".dtm-translation-block").length, 0, "reply must be clean before its own double-click");
+
+    // 2) Now double-click the reply.
+    __test.onMessageDoubleClick({ target: replyBody, preventDefault() {}, stopPropagation() {} });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const blocks = Array.from(reply.querySelectorAll(".dtm-translation-block"));
+    const body = blocks.find(b => b.dataset.dtmUnit === "content");
+    const q = blocks.find(b => b.dataset.dtmUnit === "quote");
+    assert.equal(blocks.length, 2, "reply should get BOTH quote and body translations");
+    assert.equal(body && body.textContent, "T:my reply body", "the reply body must be translated");
+    assert.equal(q && q.textContent, "T:hello", "the quote translation comes from cache");
   } finally {
     __test.resetRuntimeForTests();
     if (previousDocument) global.document = previousDocument;

@@ -15,9 +15,31 @@ param(
 $ErrorActionPreference = "Stop"
 
 $LoaderMarker   = "DiscordTranslatorMod desktop-core loader"
+$BlockStart     = "/* $LoaderMarker:start */"
+$BlockEnd       = "/* $LoaderMarker:end */"
 $PayloadDirName = "discord-translator-mod"
 $BackupName     = "index.js.dtm-original"
 $VanillaIndex   = "module.exports = require('./core.asar');`n"
+$BlockPattern   = "(?s)" + [regex]::Escape($BlockStart) + ".*?" + [regex]::Escape($BlockEnd) + "\r?\n?"
+
+function Get-NormalizedIndex {
+  param([string]$content)
+  $trimmed = $content.Trim()
+  if ($trimmed -eq "") { return $VanillaIndex }
+  return $trimmed + "`n"
+}
+
+# The index content with Babel's hook removed — keeps any other injector + core export.
+function Get-BaseIndex {
+  param([string]$content)
+  if ($content.Contains($BlockStart)) {
+    return Get-NormalizedIndex ([regex]::Replace($content, $BlockPattern, ""))
+  }
+  if ($content.Contains($LoaderMarker)) {
+    return $VanillaIndex
+  }
+  return Get-NormalizedIndex $content
+}
 
 $changed = 0
 
@@ -35,16 +57,25 @@ if (Test-Path $BaseDir) {
           $backupPath = Join-Path $core $BackupName
           $payloadDest = Join-Path $core $PayloadDirName
           $currentIndex = if (Test-Path $indexPath) { Get-Content -Raw $indexPath } else { "" }
+          $currentIndex = [string]$currentIndex
 
-          if (Test-Path $backupPath) {
-            Copy-Item $backupPath $indexPath -Force
-            Remove-Item $backupPath -Force
+          if ($currentIndex.Contains($BlockStart)) {
+            # New format: strip only our block; keep any other injector + core export.
+            Set-Content -NoNewline -Path $indexPath -Value (Get-BaseIndex $currentIndex)
             $script:changed++
           }
-          elseif ($currentIndex -like "*$LoaderMarker*") {
-            Set-Content -NoNewline -Path $indexPath -Value $VanillaIndex
+          elseif ($currentIndex.Contains($LoaderMarker)) {
+            # Legacy whole-file loader: restore the pre-Babel backup if present (may
+            # hold BetterDiscord); otherwise fall back to vanilla.
+            if (Test-Path $backupPath) {
+              Copy-Item $backupPath $indexPath -Force
+            } else {
+              Set-Content -NoNewline -Path $indexPath -Value $VanillaIndex
+            }
             $script:changed++
           }
+
+          if (Test-Path $backupPath) { Remove-Item $backupPath -Force }
 
           if (Test-Path $payloadDest) {
             Remove-Item -Recurse -Force $payloadDest

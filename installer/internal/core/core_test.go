@@ -74,8 +74,8 @@ func TestInstallThenUninstallRoundTrips(t *testing.T) {
 	if !strings.Contains(string(idx), LoaderMarker) {
 		t.Fatal("loader marker not written")
 	}
-	if _, err := os.Stat(filepath.Join(core, BackupName)); err != nil {
-		t.Fatal("backup not created")
+	if _, err := os.Stat(filepath.Join(core, BackupName)); err == nil {
+		t.Fatal("additive install should not create a backup")
 	}
 	if _, err := os.Stat(filepath.Join(core, PayloadDirName, "main.js")); err != nil {
 		t.Fatal("payload main.js not copied")
@@ -121,4 +121,62 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if _, err := Install(base, samplePayload()); err != nil {
 		t.Fatalf("second install failed: %v", err)
 	}
+}
+
+func TestInstallCoexistsWithOtherInjector(t *testing.T) {
+	base := fakeDiscord(t, "1.0.0")
+	core, _ := ResolveCoreDir(base)
+	indexPath := filepath.Join(core, "index.js")
+	t.Setenv("BABEL_CONFIG_DIR", filepath.Join(t.TempDir(), "store"))
+
+	// Simulate BetterDiscord having patched index.js first.
+	bdLine := "require('./betterdiscord-injector');"
+	write(t, indexPath, bdLine+"\nmodule.exports = require('./core.asar');\n")
+
+	if _, err := Install(base, samplePayload()); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, indexPath)
+	if !strings.Contains(got, LoaderMarker) {
+		t.Fatal("Babel hook missing")
+	}
+	if !strings.Contains(got, bdLine) {
+		t.Fatal("BetterDiscord injection must be preserved")
+	}
+	if strings.Index(got, BlockStart) > strings.Index(got, bdLine) {
+		t.Fatal("Babel hook should be prepended before the other injector")
+	}
+
+	// Re-install stays idempotent and keeps the other injector exactly once.
+	if _, err := Install(base, samplePayload()); err != nil {
+		t.Fatal(err)
+	}
+	got = readFile(t, indexPath)
+	if c := strings.Count(got, BlockStart); c != 1 {
+		t.Fatalf("expected exactly one Babel block, got %d", c)
+	}
+	if c := strings.Count(got, bdLine); c != 1 {
+		t.Fatalf("expected the other injector once, got %d", c)
+	}
+
+	// Uninstall strips only Babel, leaving BetterDiscord intact.
+	if _, err := Uninstall(base); err != nil {
+		t.Fatal(err)
+	}
+	got = readFile(t, indexPath)
+	if strings.Contains(got, LoaderMarker) {
+		t.Fatal("Babel hook not removed on uninstall")
+	}
+	if !strings.Contains(got, bdLine) {
+		t.Fatal("BetterDiscord injection should survive uninstall")
+	}
+}
+
+func readFile(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

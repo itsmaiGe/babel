@@ -7,8 +7,18 @@ const path = require("node:path");
 
 const BACKUP_INDEX_NAME = "index.js.dtm-original";
 const LOADER_MARKER = "DiscordTranslatorMod desktop-core loader";
+const BLOCK_START = `/* ${LOADER_MARKER}:start */`;
+const BLOCK_END = `/* ${LOADER_MARKER}:end */`;
 const PAYLOAD_DIR_NAME = "discord-translator-mod";
 const VANILLA_INDEX = "module.exports = require('./core.asar');\n";
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Matches one delimited Babel block (start..end, plus a trailing newline). Used to
+// strip our hook back out without touching any other injector (BetterDiscord/Vencord).
+const BABEL_BLOCK_RE = new RegExp(`${escapeRegExp(BLOCK_START)}[\\s\\S]*?${escapeRegExp(BLOCK_END)}\\n?`, "g");
 
 function installDiscordMod(options = {}) {
   const payloadSource = requirePayloadSource(options.payloadSource);
@@ -18,15 +28,31 @@ function installDiscordMod(options = {}) {
   const payloadDest = path.join(coreDir, PAYLOAD_DIR_NAME);
 
   const currentIndex = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, "utf8") : VANILLA_INDEX;
-  if (!fs.existsSync(backupPath)) {
-    if (!isVanillaIndex(currentIndex) && !currentIndex.includes(LOADER_MARKER)) {
-      throw new Error(`Refusing to overwrite an unknown Discord desktop core index at ${indexPath}`);
-    }
-    fs.writeFileSync(backupPath, currentIndex, "utf8");
+
+  // Decide what to preserve under our hook. For the legacy whole-file loader, recover
+  // from the pre-Babel backup if it's still around — it may hold BetterDiscord's
+  // injection that the old loader clobbered — instead of falling back to vanilla.
+  const legacyFormat = currentIndex.includes(LOADER_MARKER) && !currentIndex.includes(BLOCK_START);
+  const source = legacyFormat && fs.existsSync(backupPath)
+    ? fs.readFileSync(backupPath, "utf8")
+    : currentIndex;
+  const base = baseIndex(source);
+
+  // Only ever patch a recognizable Discord core index (one that loads core.asar).
+  // Refusing here keeps us from prepending to a corrupt/unexpected file and bricking it.
+  if (!base.includes("core.asar")) {
+    throw new Error(`Refusing to patch an unrecognized Discord desktop core index at ${indexPath}`);
   }
 
   replacePayloadDirectory(payloadSource, payloadDest);
-  fs.writeFileSync(indexPath, loaderIndex(), "utf8");
+  // Additive: our delimited hook first (so Babel loads), then the preserved base, which
+  // keeps any other injector and the core.asar export. Coexists regardless of order.
+  fs.writeFileSync(indexPath, loaderBlock() + base, "utf8");
+
+  // The strip-based uninstall no longer needs a backup; drop any stale one.
+  if (fs.existsSync(backupPath)) {
+    fs.rmSync(backupPath, { force: true });
+  }
 
   return {
     coreDir,
@@ -45,13 +71,23 @@ function uninstallDiscordMod(options = {}) {
     const payloadDest = path.join(coreDir, PAYLOAD_DIR_NAME);
     const currentIndex = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, "utf8") : "";
 
-    if (fs.existsSync(backupPath)) {
-      fs.copyFileSync(backupPath, indexPath);
-      fs.rmSync(backupPath, { force: true });
+    if (currentIndex.includes(BLOCK_START)) {
+      // New format: strip only our delimited block; keep any other injector + core export.
+      fs.writeFileSync(indexPath, baseIndex(currentIndex), "utf8");
       changed += 1;
     } else if (currentIndex.includes(LOADER_MARKER)) {
-      fs.writeFileSync(indexPath, VANILLA_INDEX, "utf8");
+      // Legacy whole-file loader: restore the pre-Babel backup if present (may hold
+      // BetterDiscord); otherwise fall back to vanilla.
+      if (fs.existsSync(backupPath)) {
+        fs.copyFileSync(backupPath, indexPath);
+      } else {
+        fs.writeFileSync(indexPath, VANILLA_INDEX, "utf8");
+      }
       changed += 1;
+    }
+
+    if (fs.existsSync(backupPath)) {
+      fs.rmSync(backupPath, { force: true });
     }
 
     if (fs.existsSync(payloadDest)) {
@@ -210,18 +246,36 @@ function requirePayloadSource(payloadSource) {
   return resolved;
 }
 
-function isVanillaIndex(value) {
-  return /^\s*module\.exports\s*=\s*require\(["']\.\/core\.asar["']\);\s*$/.test(value);
+// The index content with any Babel hook removed — what we preserve and re-prepend.
+function baseIndex(currentIndex) {
+  const content = String(currentIndex || "");
+  if (content.includes(BLOCK_START)) {
+    // New delimited block(s): strip only ours, keep everything else (BD/Vencord + core).
+    return normalizeIndex(content.replace(BABEL_BLOCK_RE, ""));
+  }
+  if (content.includes(LOADER_MARKER)) {
+    // Legacy whole-file loader replaced everything, so its true base was always vanilla.
+    return VANILLA_INDEX;
+  }
+  // Vanilla, or a third-party patcher (BetterDiscord/Vencord) — preserve verbatim.
+  return normalizeIndex(content);
 }
 
-function loaderIndex() {
-  return `/* ${LOADER_MARKER} */\n` +
+function normalizeIndex(content) {
+  const trimmed = String(content || "").replace(/^\s+/, "").replace(/\s+$/, "");
+  return trimmed ? `${trimmed}\n` : VANILLA_INDEX;
+}
+
+// Our hook, wrapped in try/catch (a payload failure can never break Discord) and fenced
+// by start/end markers so it can be stripped back out cleanly on uninstall.
+function loaderBlock() {
+  return `${BLOCK_START}\n` +
     `try {\n` +
     `  require("./${PAYLOAD_DIR_NAME}/main.js").install();\n` +
     `} catch (error) {\n` +
     `  console.error("[Babel] Failed to install hook:", error);\n` +
     `}\n` +
-    `module.exports = require("./core.asar");\n`;
+    `${BLOCK_END}\n`;
 }
 
 function replacePayloadDirectory(source, dest) {
@@ -312,6 +366,8 @@ if (require.main === module) {
 module.exports = {
   BACKUP_INDEX_NAME,
   LOADER_MARKER,
+  BLOCK_START,
+  BLOCK_END,
   PAYLOAD_DIR_NAME,
   VANILLA_INDEX,
   installDiscordMod,

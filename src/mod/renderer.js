@@ -1,6 +1,6 @@
 "use strict";
 
-const { MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS } = requireShared("defaults");
+const { MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS, BABEL_VERSION } = requireShared("defaults");
 const { normalizeSettings } = requireShared("settings");
 const { textMatchesLanguage } = requireShared("language");
 
@@ -139,10 +139,18 @@ let nativeError = "";
 let translationCache = new Map();
 let persistCacheTimer = 0;
 let dismissedTranslations = new Set();
+// Message ids the user (or auto-translate) actually translated. The text cache is keyed
+// by text for API reuse, but only THESE messages get their translations restored on
+// scroll — otherwise a cached translation would "bleed" onto any other message that
+// happens to share the same text (e.g. a reply's quoted preview vs the original).
+let translatedMessages = new Set();
 let updateInfo = null;
 let currentChannelId = "";
 let autoTranslateBaseline = new Map();
 let autoHandledMessages = new Set();
+let autoTranslateQueue = [];
+let autoTranslateActive = 0;
+const AUTO_TRANSLATE_CONCURRENCY = 2;
 let domHooksInstalled = false;
 let maintenanceScheduled = false;
 let subnavScrollLock = 0;
@@ -1097,6 +1105,7 @@ async function openSettingsPanel(options = {}) {
 
   const save = button("保存", "primary");
   const openConfig = button("打开配置文件夹", "secondary");
+  const clearCache = button("清除翻译缓存", "secondary");
   const refreshModels = button("刷新模型", "secondary");
   const testConnection = button("测试连接", "secondary");
   let refreshModelsInFlight = false;
@@ -1255,6 +1264,19 @@ async function openSettingsPanel(options = {}) {
     }
   });
 
+  clearCache.addEventListener("click", async () => {
+    if (clearCache.disabled) return;
+    clearCache.disabled = true;
+    try {
+      await clearTranslationCache();
+      clearCache.flashLabel("已清除");
+    } catch (error) {
+      showNativeToast(publicError(error), "failure");
+    } finally {
+      clearCache.disabled = false;
+    }
+  });
+
   save.addEventListener("click", async () => {
     if (save.disabled) return;
     // Saving is instant local I/O: no spinner, no progress/success toast. Only a
@@ -1281,7 +1303,7 @@ async function openSettingsPanel(options = {}) {
     }
   });
 
-  const saveRow = settingRow(buttonRow([openConfig, save]));
+  const saveRow = settingRow(buttonRow([openConfig, clearCache, save]));
   saveRow.id = settingsSectionId("save");
   body.append(saveRow, aboutFooter());
   panel.append(body);
@@ -1309,7 +1331,7 @@ function aboutFooter() {
   why.textContent = "取名 Babel，源自通天的「巴别塔」——传说人类因语言不通而未能建成它；这个插件想做的，正是抹平 Discord 里的语言之墙。";
 
   const meta = div("dtm-about-meta");
-  meta.appendChild(document.createTextNode("作者 麦格 · "));
+  meta.appendChild(document.createTextNode(`v${BABEL_VERSION} · 作者 麦格 · `));
   const link = document.createElement("a");
   link.className = "dtm-about-link";
   link.href = AUTHOR_X_URL;
@@ -1489,9 +1511,11 @@ function onMessageDoubleClick(event) {
   if (findAnyTranslationBlock(message)) {
     event.preventDefault();
     event.stopPropagation();
+    clearTextSelection();
     removeAllTranslations(message);
     // Remember the dismissal so periodic restore from cache doesn't bring it back.
     dismissedTranslations.add(getMessageId(message));
+    translatedMessages.delete(getMessageId(message));
     return;
   }
 
@@ -1499,9 +1523,20 @@ function onMessageDoubleClick(event) {
 
   event.preventDefault();
   event.stopPropagation();
+  clearTextSelection();
 
   dismissedTranslations.delete(getMessageId(message));
   translateMessage(message).catch(() => {});
+}
+
+// The browser selects the word on a double-click before our handler runs, leaving the
+// message highlighted. preventDefault can't stop that (it happens at mousedown), so just
+// clear the selection once we've claimed the double-click as a translate gesture.
+function clearTextSelection() {
+  const selection = typeof window !== "undefined" && typeof window.getSelection === "function"
+    ? window.getSelection()
+    : null;
+  if (selection && typeof selection.removeAllRanges === "function") selection.removeAllRanges();
 }
 
 async function translateMessage(message) {
@@ -1511,8 +1546,9 @@ async function translateMessage(message) {
 }
 
 async function translateUnit(message, unit) {
-  const key = getUnitCacheKey(message, unit);
+  const key = getUnitCacheKey(unit);
   if (settings.readTranslation.cache && translationCache.has(key)) {
+    translatedMessages.add(getMessageId(message));
     renderUnitTranslation(message, unit, translationCache.get(key), { cacheHit: true });
     return;
   }
@@ -1523,6 +1559,7 @@ async function translateUnit(message, unit) {
     cacheTranslation(key, result.text);
     // If the user dismissed the in-progress block while we waited, don't resurrect it.
     if (placeholder && !placeholder.parentElement) return;
+    translatedMessages.add(getMessageId(message));
     renderUnitTranslation(message, unit, result.text);
   } catch (error) {
     if (placeholder && !placeholder.parentElement) return;
@@ -1539,6 +1576,20 @@ function cacheTranslation(key, text) {
     translationCache.delete(oldest);
   }
   schedulePersistCache();
+}
+
+// Empty the translation cache in memory and on disk. Already-displayed translations
+// stay (they're rendered); only the stored entries are cleared, so future re-views
+// will re-translate.
+async function clearTranslationCache() {
+  translationCache.clear();
+  if (persistCacheTimer) {
+    clearTimeout(persistCacheTimer);
+    persistCacheTimer = 0;
+  }
+  if (nativeApi && typeof nativeApi.saveCache === "function") {
+    await nativeApi.saveCache({});
+  }
 }
 
 // ---- Auto-translate ------------------------------------------------------------
@@ -1561,6 +1612,10 @@ function syncCurrentChannel() {
   const id = getCurrentChannelId();
   if (id === currentChannelId) return;
   currentChannelId = id;
+  // Drop queued auto-translate work for the channel we just left — no sense spending
+  // API calls translating messages that are no longer on screen. In-flight requests
+  // finish on their own; only the not-yet-started queue is cleared.
+  autoTranslateQueue = [];
 }
 
 function messageSnowflake(message) {
@@ -1599,6 +1654,7 @@ function applyAutoTranslateSettings() {
   if (autoTranslateEnabled()) return;
   autoTranslateBaseline.clear();
   autoHandledMessages.clear();
+  autoTranslateQueue = [];
 }
 
 function shouldSkipSameLanguage(text) {
@@ -1639,10 +1695,31 @@ function runAutoTranslate(messages = visibleMessages()) {
     }
     if (getMessageUnits(message).length === 0) continue;
     autoHandledMessages.add(id);
-    autoTranslateMessage(message).catch(() => {});
+    enqueueAutoTranslate(message);
   }
 
   if (autoHandledMessages.size > 4000) autoHandledMessages.clear();
+}
+
+// Auto-translate runs new messages through a small concurrency-limited queue, so a
+// burst of messages can't fire a burst of parallel API calls (rate-limit / cost
+// protection). Manual double-click stays immediate; this only gates the automatic path.
+function enqueueAutoTranslate(message) {
+  autoTranslateQueue.push(message);
+  pumpAutoTranslateQueue();
+}
+
+function pumpAutoTranslateQueue() {
+  while (autoTranslateActive < AUTO_TRANSLATE_CONCURRENCY && autoTranslateQueue.length > 0) {
+    const message = autoTranslateQueue.shift();
+    autoTranslateActive += 1;
+    Promise.resolve(autoTranslateMessage(message))
+      .catch(() => {})
+      .then(() => {
+        autoTranslateActive -= 1;
+        pumpAutoTranslateQueue();
+      });
+  }
 }
 
 async function autoTranslateMessage(message) {
@@ -1707,8 +1784,12 @@ function getMessageId(message) {
   return message.getAttribute("id") || message.getAttribute("data-list-item-id") || "";
 }
 
-function getUnitCacheKey(message, unit) {
-  return `${getMessageId(message)}:${unit.kind}:${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${hashText(unit.text)}`;
+// Key the cache on the text + provider/model/language/style only — NOT the message id
+// or unit kind, neither of which changes the translation. This way identical text
+// (the same meme, emote word, or catchphrase from any message) hits the cache after
+// the first translation, instead of re-calling the model for every message instance.
+function getUnitCacheKey(unit) {
+  return `${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${hashText(unit.text)}`;
 }
 
 function findUnitBlock(message, kind) {
@@ -1751,10 +1832,13 @@ function renderUnitTranslation(message, unit, text, options = {}) {
 function restoreVisibleTranslations(messages = visibleMessages()) {
   if (!settings || !settings.readTranslation.cache || translationCache.size === 0) return;
   for (const message of messages) {
-    if (dismissedTranslations.has(getMessageId(message))) continue;
+    const id = getMessageId(message);
+    // Restore only messages the user actually translated — never bleed a cached
+    // translation onto a different message that merely shares the same text.
+    if (!translatedMessages.has(id) || dismissedTranslations.has(id)) continue;
     for (const unit of getMessageUnits(message)) {
       if (findUnitBlock(message, unit.kind)) continue;
-      const key = getUnitCacheKey(message, unit);
+      const key = getUnitCacheKey(unit);
       if (translationCache.has(key)) renderUnitTranslation(message, unit, translationCache.get(key), { cacheHit: true });
     }
   }
@@ -2571,9 +2655,12 @@ function setRuntimeForTests(runtime) {
   if (runtime && Object.prototype.hasOwnProperty.call(runtime, "nativeError")) nativeError = String(runtime.nativeError || "");
   translationCache = new Map();
   dismissedTranslations = new Set();
+  translatedMessages = new Set();
   currentChannelId = runtime && runtime.channelId ? String(runtime.channelId) : "";
   autoTranslateBaseline = new Map();
   autoHandledMessages = new Set();
+  autoTranslateQueue = [];
+  autoTranslateActive = 0;
 }
 
 function resetRuntimeForTests() {
@@ -2621,6 +2708,7 @@ module.exports.__test = {
   messageSnowflake,
   runAutoTranslate,
   shouldSkipSameLanguage,
-  snowflakeGreater
+  snowflakeGreater,
+  restoreVisibleTranslations
 };
 /* @dtm-test-only:end */

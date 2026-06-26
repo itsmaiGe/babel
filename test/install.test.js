@@ -9,12 +9,19 @@ const test = require("node:test");
 const {
   BACKUP_INDEX_NAME,
   LOADER_MARKER,
+  BLOCK_START,
   PAYLOAD_DIR_NAME,
   VANILLA_INDEX,
   installDiscordMod,
   resolveDiscordCoreDir,
   uninstallDiscordMod
 } = require("../scripts/desktop-core-action");
+
+const SRC = path.resolve(__dirname, "..", "src");
+
+function countOccurrences(haystack, needle) {
+  return haystack.split(needle).length - 1;
+}
 
 test("installer patches and uninstaller restores the newest Discord desktop core", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-core-test-"));
@@ -31,7 +38,8 @@ test("installer patches and uninstaller restores the newest Discord desktop core
     });
 
     assert.equal(result.coreDir, currentCore);
-    assert.equal(fs.readFileSync(path.join(currentCore, BACKUP_INDEX_NAME), "utf8"), VANILLA_INDEX);
+    // The additive install no longer writes a backup file.
+    assert.equal(fs.existsSync(path.join(currentCore, BACKUP_INDEX_NAME)), false);
     assert.match(fs.readFileSync(path.join(currentCore, "index.js"), "utf8"), new RegExp(LOADER_MARKER));
     assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME, "main.js")), true);
     assert.equal(fs.existsSync(path.join(currentCore, PAYLOAD_DIR_NAME, "shared", "settings.js")), true);
@@ -77,17 +85,86 @@ test("uninstall keeps stored config when keepConfig is set", () => {
   }
 });
 
-test("installer refuses to overwrite an unknown desktop core index", () => {
+test("installer coexists with another desktop-core injector (e.g. BetterDiscord)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-coexist-test-"));
+  try {
+    const baseDir = path.join(tmp, "discord");
+    const core = createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
+    // Simulate BetterDiscord having patched index.js first.
+    const bdLine = "require('./betterdiscord-injector');";
+    fs.writeFileSync(path.join(core, "index.js"), `${bdLine}\nmodule.exports = require('./core.asar');\n`, "utf8");
+
+    installDiscordMod({ baseDir, payloadSource: SRC });
+
+    const patched = fs.readFileSync(path.join(core, "index.js"), "utf8");
+    assert.match(patched, new RegExp(LOADER_MARKER));
+    assert.ok(patched.includes(bdLine), "BetterDiscord's injection must be preserved");
+    assert.ok(patched.includes("core.asar"), "the core export must remain");
+    assert.ok(patched.indexOf(BLOCK_START) < patched.indexOf(bdLine), "Babel's hook should be prepended");
+
+    // Uninstall strips only Babel's block, leaving BetterDiscord intact.
+    const userDataDir = path.join(tmp, "userdata", "discord");
+    uninstallDiscordMod({ baseDir, userDataDir });
+    const afterUninstall = fs.readFileSync(path.join(core, "index.js"), "utf8");
+    assert.equal(afterUninstall.includes(LOADER_MARKER), false, "Babel's hook is removed");
+    assert.ok(afterUninstall.includes(bdLine), "BetterDiscord's injection survives uninstall");
+    assert.ok(afterUninstall.includes("core.asar"));
+    assert.equal(fs.existsSync(path.join(core, PAYLOAD_DIR_NAME)), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("re-installing is idempotent — the hook is not duplicated, the other injector stays once", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-idempotent-test-"));
+  try {
+    const baseDir = path.join(tmp, "discord");
+    const core = createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
+    const bdLine = "require('./betterdiscord-injector');";
+    fs.writeFileSync(path.join(core, "index.js"), `${bdLine}\nmodule.exports = require('./core.asar');\n`, "utf8");
+
+    installDiscordMod({ baseDir, payloadSource: SRC });
+    installDiscordMod({ baseDir, payloadSource: SRC });
+
+    const patched = fs.readFileSync(path.join(core, "index.js"), "utf8");
+    assert.equal(countOccurrences(patched, BLOCK_START), 1, "exactly one Babel block");
+    assert.equal(countOccurrences(patched, bdLine), 1, "the other injector is preserved exactly once");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("upgrading from the legacy whole-file loader recovers the backed-up injection", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-legacy-migrate-test-"));
+  try {
+    const baseDir = path.join(tmp, "discord");
+    const core = createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
+    const bdLine = "require('./betterdiscord-injector');";
+    // The old whole-file loader clobbered BetterDiscord but saved it as the backup.
+    fs.writeFileSync(path.join(core, BACKUP_INDEX_NAME), `${bdLine}\nmodule.exports = require('./core.asar');\n`, "utf8");
+    const legacyLoader = `/* ${LOADER_MARKER} */\ntry { require('./discord-translator-mod/main.js').install(); } catch (e) {}\nmodule.exports = require('./core.asar');\n`;
+    fs.writeFileSync(path.join(core, "index.js"), legacyLoader, "utf8");
+
+    installDiscordMod({ baseDir, payloadSource: SRC });
+
+    const patched = fs.readFileSync(path.join(core, "index.js"), "utf8");
+    assert.match(patched, new RegExp(LOADER_MARKER));
+    assert.ok(patched.includes(bdLine), "BetterDiscord is recovered from the legacy backup");
+    assert.equal(countOccurrences(patched, BLOCK_START), 1);
+    assert.equal(fs.existsSync(path.join(core, BACKUP_INDEX_NAME)), false, "stale backup is cleaned up");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("installer refuses an unrecognized index that does not load core.asar", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dtm-core-conflict-test-"));
   try {
     const baseDir = path.join(tmp, "discord");
     const core = createDesktopCore(baseDir, "app-0.0.395", "discord_desktop_core-1/discord_desktop_core");
-    fs.writeFileSync(path.join(core, "index.js"), "require('./other-mod');\nmodule.exports = require('./core.asar');\n", "utf8");
+    fs.writeFileSync(path.join(core, "index.js"), "console.log('a totally different module');\n", "utf8");
 
-    assert.throws(() => installDiscordMod({
-      baseDir,
-      payloadSource: path.resolve(__dirname, "..", "src")
-    }), /Refusing to overwrite/);
+    assert.throws(() => installDiscordMod({ baseDir, payloadSource: SRC }), /Refusing to patch an unrecognized/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
