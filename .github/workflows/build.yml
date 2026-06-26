@@ -82,4 +82,4 @@ jobs:
             "artifacts/babel-mac/Babel Manager.dmg" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "Babel ${GITHUB_REF_NAME}" \
-            --notes "Windows：下载 Babel-Installer.exe，双击运行后点「安装」。macOS：下载 Babel Manager.dmg，打开后运行 Babel Manager 点 Install。安装后请彻底退出 Discord（托盘 > 退出 Discord）再重新打开。"
+            --notes "Babel — a lightweight Discord translator. Windows: download Babel-Installer.exe and click Install. macOS: open Babel Manager.dmg, run Babel Manager, and click Install. After installing, fully quit Discord (tray icon > Quit Discord) and reopen it."
