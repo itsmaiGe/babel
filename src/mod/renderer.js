@@ -144,7 +144,6 @@ let dismissedTranslations = new Set();
 // scroll — otherwise a cached translation would "bleed" onto any other message that
 // happens to share the same text (e.g. a reply's quoted preview vs the original).
 let translatedMessages = new Set();
-let updateInfo = null;
 let currentChannelId = "";
 let autoTranslateBaseline = new Map();
 let autoHandledMessages = new Set();
@@ -185,18 +184,6 @@ function start(api) {
   injectBaseStyles();
   installDomHooks();
   loadSettingsSafe().then(loadPersistedCache).then(runDomMaintenance);
-  maybeCheckForUpdate();
-}
-
-function maybeCheckForUpdate() {
-  if (!nativeApi || typeof nativeApi.checkUpdate !== "function") return;
-  Promise.resolve(nativeApi.checkUpdate()).then(info => {
-    if (!info || !info.ok || !info.updateAvailable) return;
-    updateInfo = info;
-    // A gentle one-time toast; the persistent download link lives in the settings
-    // About footer so it's always reachable.
-    showNativeToast(`Babel 有新版本 v${info.latest}，可在设置底部下载更新`, "message");
-  }).catch(() => {});
 }
 
 async function loadPersistedCache() {
@@ -448,6 +435,10 @@ function injectBaseStyles() {
       margin-top: 10px;
       font-size: 13px;
       font-weight: 600;
+    }
+    .dtm-about-update-status {
+      color: var(--text-muted, #949ba4);
+      font-weight: 400;
     }
   `;
   document.documentElement.appendChild(style);
@@ -1346,21 +1337,51 @@ function aboutFooter() {
 
   wrap.append(title, desc, why, meta);
 
-  if (updateInfo && updateInfo.updateAvailable) {
-    const update = div("dtm-about-update");
-    const updateLink = document.createElement("a");
-    updateLink.className = "dtm-about-link";
-    updateLink.textContent = `🎉 新版本 v${updateInfo.latest} 可用 · 点击下载`;
-    updateLink.href = updateInfo.url;
-    updateLink.setAttribute("role", "link");
-    updateLink.addEventListener("click", event => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (nativeApi && typeof nativeApi.openExternal === "function") nativeApi.openExternal(updateInfo.url);
-    });
-    update.appendChild(updateLink);
-    wrap.append(update);
-  }
+  // Manual update check: click to query GitHub and show the result inline. This avoids a
+  // startup network call and the async-timing problem of an auto-check (the footer would
+  // render before the check resolved and then never update).
+  const updateRow = div("dtm-about-update");
+  const checkLink = document.createElement("a");
+  checkLink.className = "dtm-about-link";
+  checkLink.setAttribute("role", "button");
+  checkLink.textContent = "检查更新";
+  const result = document.createElement("span");
+  result.className = "dtm-about-update-status";
+
+  let checking = false;
+  checkLink.addEventListener("click", async event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (checking) return;
+    checking = true;
+    result.textContent = " · 检查中…";
+    try {
+      const info = nativeApi && typeof nativeApi.checkUpdate === "function" ? await nativeApi.checkUpdate() : null;
+      if (info && info.ok && info.updateAvailable) {
+        result.textContent = ` · 发现新版本 v${info.latest} · `;
+        const download = document.createElement("a");
+        download.className = "dtm-about-link";
+        download.setAttribute("role", "link");
+        download.textContent = "点击下载";
+        download.addEventListener("click", downloadEvent => {
+          downloadEvent.preventDefault();
+          downloadEvent.stopPropagation();
+          if (nativeApi && typeof nativeApi.openExternal === "function") nativeApi.openExternal(info.url);
+        });
+        result.appendChild(download);
+      } else if (info && info.ok) {
+        result.textContent = ` · 已是最新版本（v${BABEL_VERSION}）`;
+      } else {
+        result.textContent = " · 检查失败，请稍后重试";
+      }
+    } catch (_error) {
+      result.textContent = " · 检查失败，请稍后重试";
+    } finally {
+      checking = false;
+    }
+  });
+  updateRow.append(checkLink, result);
+  wrap.append(updateRow);
 
   return wrap;
 }
