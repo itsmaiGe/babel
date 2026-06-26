@@ -34,8 +34,10 @@ const CHANNELS = Object.freeze({
 });
 
 const MAX_PERSISTED_CACHE = 1000;
-const GITHUB_RELEASES_API = "https://api.github.com/repos/itsmaiGe/babel/releases/latest";
-const GITHUB_RELEASES_PAGE = "https://github.com/itsmaiGe/babel/releases/latest";
+// The releases ATOM feed is served from github.com (not api.github.com), so it is NOT
+// subject to the API's 60-requests/hour-per-IP limit — important because many users
+// share a VPN exit IP and would otherwise collectively exhaust it.
+const GITHUB_RELEASES_ATOM = "https://github.com/itsmaiGe/babel/releases.atom";
 const UPDATE_CHECK_TIMEOUT_MS = 8000;
 
 const MAX_TRANSLATE_CHARS = 12000;
@@ -313,24 +315,23 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Best-effort: ask GitHub for the latest release and compare to the bundled version.
-// Any failure (offline, rate-limited, no releases) resolves to "no update" silently.
+// Best-effort: read the latest release tag from GitHub's releases ATOM feed (rate-limit
+// free) and compare to the bundled version. Any failure resolves to "no update".
 async function checkForUpdate() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
   try {
-    const response = await httpFetch(GITHUB_RELEASES_API, {
+    const response = await httpFetch(GITHUB_RELEASES_ATOM, {
       method: "GET",
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Babel-Discord-Translator"
-      },
+      headers: { "User-Agent": "Babel-Discord-Translator" },
       signal: controller.signal
     });
     if (!response.ok) return { ok: false, current: BABEL_VERSION };
 
-    const body = await response.json().catch(() => null);
-    const tag = String((body && body.tag_name) || "").trim();
+    const xml = await response.text();
+    // Entries are newest-first; the first /releases/tag/<tag> link is the latest release.
+    const match = xml.match(/releases\/tag\/([^"'<>\s]+)/);
+    const tag = match ? decodeURIComponent(match[1]).trim() : "";
     if (!tag) return { ok: false, current: BABEL_VERSION };
 
     return {
@@ -338,7 +339,7 @@ async function checkForUpdate() {
       current: BABEL_VERSION,
       latest: tag.replace(/^v/i, ""),
       updateAvailable: compareVersions(tag, BABEL_VERSION) > 0,
-      url: String((body && body.html_url) || GITHUB_RELEASES_PAGE)
+      url: `https://github.com/itsmaiGe/babel/releases/tag/${tag}`
     };
   } catch (_error) {
     return { ok: false, current: BABEL_VERSION };

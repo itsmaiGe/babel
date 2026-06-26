@@ -418,37 +418,43 @@ test("compareVersions orders semantic versions numerically and ignores a v prefi
   assert.equal(compareVersions("0.1.0-beta", "0.1.0"), 0);
 });
 
-test("checkForUpdate flags a newer GitHub release and surfaces the download link", async () => {
+function atomFeed(tag) {
+  return '<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">'
+    + '<link rel="self" href="https://github.com/itsmaiGe/babel/releases.atom"/>'
+    + '<entry><id>tag:github.com,2008:Repository/1/' + tag + '</id>'
+    + '<link rel="alternate" type="text/html" href="https://github.com/itsmaiGe/babel/releases/tag/' + tag + '"/>'
+    + '<title>' + tag + '</title></entry></feed>';
+}
+
+test("checkForUpdate flags a newer release from the ATOM feed and surfaces the download link", async () => {
   const { checkForUpdate } = require("../src/mod/main");
   const previousFetch = global.fetch;
   let requestedUrl = "";
   global.fetch = async (url, options) => {
     requestedUrl = url;
     assert.ok(options.headers["User-Agent"]);
-    return {
-      ok: true,
-      json: async () => ({ tag_name: "v9.9.9", html_url: "https://github.com/itsmaiGe/babel/releases/tag/v9.9.9" })
-    };
+    return { ok: true, text: async () => atomFeed("v9.9.9") };
   };
   try {
     const result = await checkForUpdate();
     assert.ok(requestedUrl.includes("itsmaiGe/babel"));
+    assert.ok(requestedUrl.includes("releases.atom"), "uses the rate-limit-free ATOM feed, not the API");
     assert.equal(result.ok, true);
     assert.equal(result.updateAvailable, true);
     assert.equal(result.latest, "9.9.9");
-    assert.ok(result.url.includes("github.com/itsmaiGe/babel"));
+    assert.ok(result.url.includes("github.com/itsmaiGe/babel/releases/tag/v9.9.9"));
   } finally {
     if (previousFetch) global.fetch = previousFetch;
     else delete global.fetch;
   }
 });
 
-test("checkForUpdate reports no update when GitHub returns the current version, and fails quietly on errors", async () => {
+test("checkForUpdate reports no update when the feed's latest equals the current version, and fails quietly on errors", async () => {
   const { checkForUpdate } = require("../src/mod/main");
   const { BABEL_VERSION } = require("../src/shared/defaults");
   const previousFetch = global.fetch;
   try {
-    global.fetch = async () => ({ ok: true, json: async () => ({ tag_name: "v" + BABEL_VERSION }) });
+    global.fetch = async () => ({ ok: true, text: async () => atomFeed("v" + BABEL_VERSION) });
     const same = await checkForUpdate();
     assert.equal(same.ok, true);
     assert.equal(same.updateAvailable, false);
