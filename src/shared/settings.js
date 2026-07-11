@@ -58,6 +58,7 @@ function normalizeSettings(input) {
   next.translationStyle = TRANSLATION_STYLE_IDS.has(source.translationStyle)
     ? source.translationStyle
     : next.translationStyle;
+  next.customPrompt = asString(source.customPrompt, next.customPrompt, 4000);
 
   if (isObject(source.model)) {
     const provider = providerById(inferProviderId(source.model));
@@ -96,6 +97,9 @@ function normalizeSettings(input) {
     next.sendBox.width = Number.isFinite(source.sendBox.width) && source.sendBox.width > 0
       ? source.sendBox.width
       : next.sendBox.width;
+    next.sendBox.opacity = Number.isFinite(source.sendBox.opacity) && source.sendBox.opacity >= 0.4 && source.sendBox.opacity <= 1
+      ? source.sendBox.opacity
+      : next.sendBox.opacity;
   }
 
   if (isObject(source.style)) {

@@ -28,6 +28,15 @@ const LANGUAGE_OPTIONS = [
   { value: "俄语", label: "俄语" }
 ];
 const TRANSLATION_STYLE_OPTIONS = TRANSLATION_STYLE_PRESETS.map(style => ({ value: style.value, label: style.label }));
+const SEND_BOX_OPACITY_OPTIONS = [
+  { value: "1", label: "100%" },
+  { value: "0.9", label: "90%" },
+  { value: "0.8", label: "80%" },
+  { value: "0.7", label: "70%" },
+  { value: "0.6", label: "60%" },
+  { value: "0.5", label: "50%" },
+  { value: "0.4", label: "40%" }
+];
 const FONT_OPTIONS = [
   { value: "var(--font-primary)", label: "Discord 默认" },
   { value: "inherit", label: "跟随消息" },
@@ -1092,6 +1101,7 @@ async function openSettingsPanel(options = {}) {
   const baseUrlFieldHost = div();
   const modelFieldHost = div();
   const apiKeyFieldHost = div();
+  const customPromptHost = div();
   let modelComboBoxHost = null;
 
   const save = button("保存", "primary");
@@ -1205,6 +1215,15 @@ async function openSettingsPanel(options = {}) {
   renderProviderFields();
   renderApiKeyField();
 
+  const customPromptField = inputField("自定义提示词", "textarea", formState.customPrompt, value => {
+    formState.customPrompt = value;
+  }, { placeholder: "例如：使用简短自然的游戏聊天语气，保留专有名词。" });
+  customPromptHost.appendChild(customPromptField);
+  const syncCustomPromptVisibility = () => {
+    customPromptHost.style.display = formState.translationStyle === "custom" ? "" : "none";
+  };
+  syncCustomPromptVisibility();
+
   body.append(
     section("模型", [
       providerSelectHost,
@@ -1216,10 +1235,18 @@ async function openSettingsPanel(options = {}) {
     section("翻译设置", [
       toggleRow("启用插件", formState.enabled, value => { formState.enabled = value; }),
       toggleRow("启用发送翻译输入框", formState.sendTranslation.enabled, value => { formState.sendTranslation.enabled = value; }),
+      toggleRow("回车后自动发送", formState.sendTranslation.enterToSend, value => { formState.sendTranslation.enterToSend = value; }),
+      selectField("输入框透明度", String(formState.sendBox.opacity), SEND_BOX_OPACITY_OPTIONS, value => {
+        formState.sendBox.opacity = Number(value);
+      }),
       toggleRow("自动翻译新消息", formState.autoTranslate.enabled, value => { formState.autoTranslate.enabled = value; }),
       languageSelectField("阅读目标语言", formState.model.targetLanguage, value => { formState.model.targetLanguage = value; }),
       languageSelectField("发送目标语言", formState.model.sendLanguage, value => { formState.model.sendLanguage = value; }),
-      selectField("翻译风格", formState.translationStyle, TRANSLATION_STYLE_OPTIONS, value => { formState.translationStyle = value; })
+      selectField("翻译风格", formState.translationStyle, TRANSLATION_STYLE_OPTIONS, value => {
+        formState.translationStyle = value;
+        syncCustomPromptVisibility();
+      }),
+      customPromptHost
     ], "translation")
   );
 
@@ -1810,7 +1837,8 @@ function getMessageId(message) {
 // (the same meme, emote word, or catchphrase from any message) hits the cache after
 // the first translation, instead of re-calling the model for every message instance.
 function getUnitCacheKey(unit) {
-  return `${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${hashText(unit.text)}`;
+  const customPromptKey = settings.translationStyle === "custom" ? hashText(settings.customPrompt || "") : "";
+  return `${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${customPromptKey}:${hashText(unit.text)}`;
 }
 
 function findUnitBlock(message, kind) {
@@ -1939,6 +1967,14 @@ function ensureSendBox() {
   box.style.display = "";
   positionSendBox(box, mount);
   applyComposerBackground(box, editor);
+  applySendBoxOpacity(box);
+  const status = box.querySelector("span");
+  if (status && !box.querySelector("input:disabled")) status.textContent = enterHint();
+}
+
+function applySendBoxOpacity(box) {
+  const opacity = settings && settings.sendBox ? settings.sendBox.opacity : 1;
+  box.style.opacity = String(Number.isFinite(opacity) ? opacity : 1);
 }
 
 function applyComposerBackground(box, editor) {

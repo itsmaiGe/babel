@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { getApiKeyStatus, listModels, patchBrowserWindowOptions, setApiKey, testConnection } = require("../src/mod/main");
+const { getApiKeyStatus, insertAndSend, listModels, patchBrowserWindowOptions, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
 const { normalizeSettings } = require("../src/shared/settings");
 
 test("patchBrowserWindowOptions replaces Discord preload and preserves the original path", () => {
@@ -34,6 +34,43 @@ test("patchBrowserWindowOptions skips Discord splash preload", () => {
 
   assert.equal(options.webPreferences.preload, "/discord/splashScreenPreload.js");
   assert.equal(options.webPreferences.additionalArguments, undefined);
+});
+
+test("insertAndSend obeys the persisted auto-send preference", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-send-test-"));
+  const store = path.join(temp, "discord-translator-mod");
+  fs.mkdirSync(store, { recursive: true });
+  setElectronForTests({ app: { getPath: () => temp } });
+
+  try {
+    const events = [];
+    const webContents = {
+      insertText: async text => events.push(["text", text]),
+      sendInputEvent: event => events.push(["key", event.type, event.keyCode])
+    };
+
+    fs.writeFileSync(path.join(store, "settings.json"), JSON.stringify({
+      sendTranslation: { enabled: true, enterToSend: false }
+    }));
+    assert.deepEqual(await insertAndSend(webContents, " translated "), { ok: true, sent: false });
+    assert.deepEqual(events, [["text", "translated"]]);
+
+    events.length = 0;
+    fs.writeFileSync(path.join(store, "settings.json"), JSON.stringify({
+      sendTranslation: { enabled: true, enterToSend: true }
+    }));
+    assert.deepEqual(await insertAndSend(webContents, "translated"), { ok: true, sent: true });
+    assert.deepEqual(events, [
+      ["text", "translated"],
+      ["key", "keyDown", "Enter"],
+      ["key", "keyUp", "Enter"]
+    ]);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test("testConnection uses staged settings and api key without reading the keychain", async () => {

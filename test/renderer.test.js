@@ -1178,6 +1178,7 @@ test("send translation box mounts above the Discord native composer", () => {
       settings: {
         enabled: true,
         sendTranslation: { enabled: true },
+        sendBox: { opacity: 0.7 },
         model: { sendLanguage: "英语" }
       }
     });
@@ -1193,6 +1194,7 @@ test("send translation box mounts above the Discord native composer", () => {
     // Default position tracks the composer's left edge and width.
     assert.equal(box.style.width, "720px");
     assert.equal(box.style.left, "80px");
+    assert.equal(box.style.opacity, "0.7");
     // Has a drag grip handle.
     assert.ok(box.children.some(child => child.className === "dtm-send-grip"));
   } finally {
@@ -1230,6 +1232,10 @@ test("settings page source does not contain hand rolled select, switch animation
   assert.ok(source.includes("translationStylePreview"));
   assert.ok(source.includes("selectField(\"AI 平台\""));
   assert.ok(source.includes("selectField(\"翻译风格\""));
+  assert.ok(source.includes('inputField("自定义提示词", "textarea"'));
+  assert.ok(source.includes('toggleRow("回车后自动发送"'));
+  assert.ok(source.includes('selectField("输入框透明度"'));
+  assert.ok(source.includes("applySendBoxOpacity"));
   assert.ok(source.includes("(document.body || document.documentElement).appendChild(box)"));
   assert.ok(source.includes("function findDiscordComposerMount"));
   assert.ok(source.includes("[class*='channelTextArea']"));

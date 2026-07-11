@@ -1,7 +1,7 @@
 "use strict";
 
 // Keep in sync with package.json "version". Used for the GitHub update check.
-const BABEL_VERSION = "0.1.3";
+const BABEL_VERSION = "0.1.4";
 
 const DEFAULT_TRANSLATION_PROMPT = [
   "你是 Discord 聊天翻译器。",
@@ -47,6 +47,11 @@ const TRANSLATION_STYLE_PRESETS = Object.freeze([
     value: "formal",
     label: "正式礼貌",
     instruction: "正式、礼貌、清晰、克制；适合公告、工作区和跨团队沟通。"
+  },
+  {
+    value: "custom",
+    label: "自定义",
+    instruction: ""
   }
 ]);
 
@@ -135,6 +140,26 @@ const MODEL_PROVIDERS = Object.freeze([
     ]
   },
   {
+    value: "ollama",
+    label: "Ollama（本地）",
+    protocol: "openai",
+    baseUrl: "http://localhost:11434/v1",
+    defaultModel: "qwen2.5",
+    models: [
+      { value: "qwen2.5", label: "Qwen2.5" },
+      { value: "llama3.1", label: "Llama 3.1" },
+      { value: "gemma2", label: "Gemma 2" }
+    ]
+  },
+  {
+    value: "lmstudio",
+    label: "LM Studio（本地）",
+    protocol: "openai",
+    baseUrl: "http://localhost:1234/v1",
+    defaultModel: "",
+    models: []
+  },
+  {
     value: "custom",
     label: "自定义",
     protocol: "openai",
@@ -147,6 +172,7 @@ const MODEL_PROVIDERS = Object.freeze([
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
   translationStyle: "natural",
+  customPrompt: "",
   model: {
     provider: "openai",
     baseUrl: "https://api.openai.com/v1",
@@ -170,7 +196,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   sendBox: {
     x: null,
     y: null,
-    width: null
+    width: null,
+    opacity: 1
   },
   style: {
     textDecoration: "none",

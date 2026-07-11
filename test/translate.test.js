@@ -112,6 +112,21 @@ test("buildTranslationMessages uses one shared translation style", () => {
   assert.doesNotMatch(sendMessages[0].content, /old send prompt/);
 });
 
+test("buildTranslationMessages uses the custom prompt only for the custom style", () => {
+  const custom = normalizeSettings({
+    translationStyle: "custom",
+    customPrompt: "使用海盗口吻，但不要改动代码块"
+  });
+  const customMessages = buildTranslationMessages({ text: "hello", direction: "read", settings: custom });
+  assert.match(customMessages[0].content, /使用海盗口吻，但不要改动代码块/);
+  assert.match(customMessages[0].content, /简体中文/);
+  assert.match(customMessages[0].content, /只返回翻译后的文本/);
+
+  const preset = normalizeSettings({ translationStyle: "natural", customPrompt: "不应出现" });
+  const presetMessages = buildTranslationMessages({ text: "hello", direction: "read", settings: preset });
+  assert.doesNotMatch(presetMessages[0].content, /不应出现/);
+});
+
 test("buildAnthropicMessagesUrl appends messages path", () => {
   assert.equal(
     buildAnthropicMessagesUrl("https://api.anthropic.com/v1"),

@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { DEFAULT_SETTINGS, MODEL_PROVIDERS } = require("../src/shared/defaults");
+const { DEFAULT_SETTINGS, MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS } = require("../src/shared/defaults");
 const { normalizeSettings } = require("../src/shared/settings");
 
 test("normalizeSettings fills missing values with safe defaults", () => {
@@ -17,6 +17,9 @@ test("normalizeSettings fills missing values with safe defaults", () => {
   assert.equal(settings.autoTranslate.enabled, false);
   assert.equal(settings.autoTranslate.skipSameLanguage, true);
   assert.equal(settings.translationStyle, DEFAULT_SETTINGS.translationStyle);
+  assert.equal(settings.customPrompt, "");
+  assert.equal(settings.sendTranslation.enterToSend, true);
+  assert.equal(settings.sendBox.opacity, 1);
 });
 
 test("normalizeSettings honors the auto-translate switch and forces skip-same-language on", () => {
@@ -51,16 +54,23 @@ test("normalizeSettings keeps AI cache permanently enabled", () => {
   assert.equal(settings.readTranslation.cache, true);
 });
 
-test("normalizeSettings remembers a custom send box position and width and ignores junk", () => {
-  assert.deepEqual(normalizeSettings({}).sendBox, { x: null, y: null, width: null });
+test("normalizeSettings remembers send box layout and opacity and ignores junk", () => {
+  assert.deepEqual(normalizeSettings({}).sendBox, { x: null, y: null, width: null, opacity: 1 });
   assert.deepEqual(
-    normalizeSettings({ sendBox: { x: 320, y: 540, width: 480 } }).sendBox,
-    { x: 320, y: 540, width: 480 }
+    normalizeSettings({ sendBox: { x: 320, y: 540, width: 480, opacity: 0.7 } }).sendBox,
+    { x: 320, y: 540, width: 480, opacity: 0.7 }
   );
   assert.deepEqual(
-    normalizeSettings({ sendBox: { x: "left", y: NaN, width: -10 } }).sendBox,
-    { x: null, y: null, width: null }
+    normalizeSettings({ sendBox: { x: "left", y: NaN, width: -10, opacity: 8 } }).sendBox,
+    { x: null, y: null, width: null, opacity: 1 }
   );
+});
+
+test("normalizeSettings keeps a bounded custom translation prompt", () => {
+  assert.equal(TRANSLATION_STYLE_PRESETS.at(-1).value, "custom");
+  assert.equal(normalizeSettings({ translationStyle: "custom", customPrompt: "  像游戏队友一样翻译  " }).customPrompt, "像游戏队友一样翻译");
+  assert.equal(normalizeSettings({ customPrompt: 123 }).customPrompt, "");
+  assert.equal(normalizeSettings({ customPrompt: "x".repeat(5000) }).customPrompt.length, 4000);
 });
 
 test("normalizeSettings keeps style background toggle and emphasis within allowed values", () => {

@@ -8,6 +8,8 @@ endpoint.
 
 > Named after the Tower of Babel — the wall of language this plugin is meant to tear down.
 
+[中文使用指南](USAGE.zh-CN.md)
+
 It installs a BetterDiscord-style desktop-core hook: it backs up Discord's original
 loader, then patches it to load the Babel runtime into Discord's renderer. No Discord
 token is used and Discord's private APIs are never called.
@@ -24,14 +26,16 @@ token is used and Discord's private APIs are never called.
 - **Read translation** — double-click a message to translate it in place; double-click
   again to hide it. Replies translate both the quoted preview and the body.
 - **Send translation** — a draggable, resizable floating input box: type, press Enter,
-  and Babel translates then sends.
+  and Babel translates then sends. Its opacity is adjustable, and auto-send can be
+  disabled to leave the translation in Discord's native composer for review.
 - **Auto-translate** — optionally translate new incoming messages automatically. It only
   touches messages that arrive *after* you enable it (never the backlog), and skips
   messages already in your target language.
-- **Bring your own key** — pick a provider and model, paste your API key, and go.
+- **Cloud or local models** — use your own API key with a supported provider, enter any
+  OpenAI-compatible model ID, or connect directly to Ollama / LM Studio without a key.
 - **Native styling** — the settings UI reuses Discord's own components and follows the
   active theme. Style translations with background on/off, marker / wavy / bold / faded,
-  custom colors, and fonts.
+  custom colors, and fonts. Translation styles include a custom prompt option.
 - **Proxy-aware** — provider requests go through Electron's network stack, so they honor
   your system / Discord proxy (a common cause of "fetch failed" on other plugins).
 
@@ -46,8 +50,7 @@ embedded; no Node.js required). Double-click it, then click **Install**.
 ### macOS
 Download **`Babel Manager.dmg`**, open it, and run **Babel Manager** (drag it to
 Applications first if you like). Click **Install**. It's a native arm64 Cocoa app that
-launches Node via `arch -arm64`, so it never triggers a Rosetta prompt, and it needs no
-administrator rights.
+installs Babel directly, with no Node.js, Rosetta, or administrator rights required.
 
 ### After installing (both platforms)
 **Fully quit Discord** — system tray → Quit Discord, not just closing the window — and
@@ -63,8 +66,8 @@ reopen it. Babel then appears in **Discord Settings → Babel**.
 
 ## Staying updated
 
-- **In-app update check** — on startup Babel checks GitHub for a newer release and, if one
-  exists, shows a notice with a download link in the settings footer.
+- **In-app update check** — click **Check for updates** in the settings footer to compare
+  the installed version with the latest GitHub release.
 - **To update**, download the latest installer and run it again — it overwrites the
   existing install in place.
 - **Discord updates remove the plugin.** When Discord auto-updates it replaces the

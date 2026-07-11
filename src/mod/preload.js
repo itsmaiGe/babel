@@ -490,10 +490,19 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       setValue(nextValue);
       sendChange(nextValue);
     };
+    // Discord's ComboBox can only DISPLAY a value that exists in its options. A freely
+    // typed value (e.g. a local model id that isn't in the preset list) would otherwise
+    // vanish from the field on blur — the value is still kept, it just isn't shown. Keep
+    // the current value present as an option so it stays visible. This happens inside the
+    // component (no re-mount), so the caret isn't lost while typing either.
+    const baseOptions = detail.options || [];
+    const options = value && !baseOptions.some(option => option && option.value === value)
+      ? baseOptions.concat({ id: value, value, label: value })
+      : baseOptions;
     return h(ui.ComboBoxField, {
       label: detail.name || "",
       selectionMode: "single",
-      options: detail.options || [],
+      options,
       value: value || null,
       onSelectionChange: commit,
       onQueryChange,

@@ -145,6 +145,16 @@ function patchBrowserWindow() {
     value: "BrowserWindow"
   });
 
+  // Stringify like the native constructor. Client-mod detectors (e.g. BetterDiscord
+  // warns when electron.BrowserWindow.toString() reads "class X extends Y {") would
+  // otherwise flag our subclass as a conflicting mod and nag the user on every launch.
+  // This is purely cosmetic — construction and behaviour are unchanged.
+  Object.defineProperty(PatchedBrowserWindow, "toString", {
+    configurable: true,
+    writable: true,
+    value: () => "function BrowserWindow() { [native code] }"
+  });
+
   const electronPath = require.resolve("electron");
   if (require.cache[electronPath]) {
     delete require.cache[electronPath].exports;
@@ -214,21 +224,22 @@ function registerIpcHandlers(electron) {
   ipcMain.handle(CHANNELS.loadCache, () => loadTranslationCache());
   ipcMain.handle(CHANNELS.saveCache, (_event, cache) => saveTranslationCache(cache));
   ipcMain.handle(CHANNELS.checkUpdate, () => checkForUpdate());
-  ipcMain.handle(CHANNELS.insertAndSend, async (event, text) => {
-    const webContents = event.sender;
-    const outgoingText = String(text || "").trim();
-    if (!outgoingText) return { ok: false, error: "Nothing to send." };
-    const send = readSettings().sendTranslation.enterToSend;
+  ipcMain.handle(CHANNELS.insertAndSend, (event, text) => insertAndSend(event.sender, text));
+}
 
-    await webContents.insertText(outgoingText);
-    if (send) {
-      await wait(40);
-      webContents.sendInputEvent({ type: "keyDown", keyCode: "Enter" });
-      webContents.sendInputEvent({ type: "keyUp", keyCode: "Enter" });
-    }
+async function insertAndSend(webContents, text) {
+  const outgoingText = String(text || "").trim();
+  if (!outgoingText) return { ok: false, error: "Nothing to send." };
+  const send = readSettings().sendTranslation.enterToSend;
 
-    return { ok: true, sent: send };
-  });
+  await webContents.insertText(outgoingText);
+  if (send) {
+    await wait(40);
+    webContents.sendInputEvent({ type: "keyDown", keyCode: "Enter" });
+    webContents.sendInputEvent({ type: "keyUp", keyCode: "Enter" });
+  }
+
+  return { ok: true, sent: send };
 }
 
 function getStoreDir() {
@@ -679,6 +690,9 @@ module.exports = {
   checkForUpdate,
   compareVersions,
   getApiKeyStatus,
+  /* @dtm-test-only:start */
+  insertAndSend,
+  /* @dtm-test-only:end */
   install,
   listModels,
   loadTranslationCache,

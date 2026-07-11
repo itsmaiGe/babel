@@ -62,11 +62,14 @@ function buildTranslationMessages({ text, direction, settings }) {
     ? settings.model.sendLanguage
     : settings.model.targetLanguage;
   const style = getTranslationStyle(settings.translationStyle);
+  const styleInstruction = style.value === "custom"
+    ? String(settings.customPrompt || "").trim() || TRANSLATION_STYLE_PRESETS[0].instruction
+    : style.instruction;
 
   return [
     {
       role: "system",
-      content: applyPromptTemplate(DEFAULT_TRANSLATION_PROMPT, targetLanguage, style.instruction)
+      content: applyPromptTemplate(DEFAULT_TRANSLATION_PROMPT, targetLanguage, styleInstruction)
     },
     {
       role: "user",

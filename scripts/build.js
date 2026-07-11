@@ -9,6 +9,7 @@ const childProcess = require("node:child_process");
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const DIST_DIR = path.join(PROJECT_ROOT, "dist");
 const MANAGER_NAME = "Babel Manager";
+const PACKAGE_VERSION = require(path.join(PROJECT_ROOT, "package.json")).version;
 
 function main() {
   fs.rmSync(DIST_DIR, { recursive: true, force: true });
@@ -32,10 +33,11 @@ function createManagerApp(buildRoot) {
   const resourcesDir = path.join(contentsDir, "Resources");
   const executable = path.join(macOSDir, MANAGER_NAME);
   const sourcePath = path.join(buildRoot, "manager.m");
+  const nativeCoreDir = path.join(PROJECT_ROOT, "installer", "macos");
 
   fs.mkdirSync(macOSDir, { recursive: true });
   fs.mkdirSync(resourcesDir, { recursive: true });
-  fs.writeFileSync(path.join(contentsDir, "Info.plist"), plist(MANAGER_NAME), "utf8");
+  fs.writeFileSync(path.join(contentsDir, "Info.plist"), plist(MANAGER_NAME, PACKAGE_VERSION), "utf8");
   copyFile(path.join(PROJECT_ROOT, "assets", "babel.icns"), path.join(resourcesDir, "babel.icns"));
   copyManagerResources(resourcesDir);
   fs.writeFileSync(sourcePath, managerSource({ name: MANAGER_NAME }), "utf8");
@@ -47,7 +49,10 @@ function createManagerApp(buildRoot) {
     "-fobjc-arc",
     "-framework",
     "Cocoa",
+    "-I",
+    nativeCoreDir,
     sourcePath,
+    path.join(nativeCoreDir, "BabelInstallerCore.m"),
     "-o",
     executable
   ], {
@@ -97,14 +102,12 @@ function clearExtendedAttributes(target) {
 
 function copyManagerResources(resourcesDir) {
   const payloadDir = path.join(resourcesDir, "payload");
-  const scriptsDir = path.join(resourcesDir, "scripts");
 
   // Strip test-only scaffolding so it never ships in the running plugin.
   copyStripped(path.join(PROJECT_ROOT, "src", "mod", "main.js"), path.join(payloadDir, "mod", "main.js"));
   copyFile(path.join(PROJECT_ROOT, "src", "mod", "preload.js"), path.join(payloadDir, "mod", "preload.js"));
   copyStripped(path.join(PROJECT_ROOT, "src", "mod", "renderer.js"), path.join(payloadDir, "mod", "renderer.js"));
   copyDirectory(path.join(PROJECT_ROOT, "src", "shared"), path.join(payloadDir, "shared"));
-  copyFile(path.join(PROJECT_ROOT, "scripts", "desktop-core-action.js"), path.join(scriptsDir, "desktop-core-action.js"));
 }
 
 const TEST_ONLY_BLOCK = /\/\* @dtm-test-only:start[\s\S]*?@dtm-test-only:end \*\/\n?/g;
@@ -137,17 +140,9 @@ function managerSource({ name }) {
 
   return `#import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
-#import <sys/utsname.h>
+#import "BabelInstallerCore.h"
 
 static NSString *const AppName = @${appName};
-
-static BOOL IsAppleSilicon(void) {
-  struct utsname systemInfo;
-  if (uname(&systemInfo) != 0) {
-    return NO;
-  }
-  return strcmp(systemInfo.machine, "arm64") == 0;
-}
 
 static void ShowAlert(NSString *message, NSString *info) {
   NSAlert *alert = [[NSAlert alloc] init];
@@ -157,124 +152,20 @@ static void ShowAlert(NSString *message, NSString *info) {
   [alert runModal];
 }
 
-static NSString *RunAndCapture(NSString *executable, NSArray<NSString *> *arguments) {
-  NSTask *task = [[NSTask alloc] init];
-  task.executableURL = [NSURL fileURLWithPath:executable];
-  task.arguments = arguments;
-
-  NSPipe *pipe = [NSPipe pipe];
-  task.standardOutput = pipe;
-  task.standardError = pipe;
-
-  NSError *error = nil;
-  if (![task launchAndReturnError:&error]) {
-    return @"";
-  }
-
-  [task waitUntilExit];
-  NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
-  NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-  return output ?: @"";
-}
-
-static BOOL RunNodeAndCapture(NSString *nodePath, BOOL useArm64Runner, NSArray<NSString *> *nodeArguments, NSString **output, NSString **errorMessage) {
-  NSTask *task = [[NSTask alloc] init];
-  if (useArm64Runner) {
-    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObjects:@"-arm64", nodePath, nil];
-    [arguments addObjectsFromArray:nodeArguments];
-    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/arch"];
-    task.arguments = arguments;
-  } else {
-    task.executableURL = [NSURL fileURLWithPath:nodePath];
-    task.arguments = nodeArguments;
-  }
-
-  NSPipe *stdoutPipe = [NSPipe pipe];
-  NSPipe *stderrPipe = [NSPipe pipe];
-  task.standardOutput = stdoutPipe;
-  task.standardError = stderrPipe;
-
-  NSError *launchError = nil;
-  if (![task launchAndReturnError:&launchError]) {
-    if (errorMessage != NULL) {
-      *errorMessage = launchError.localizedDescription ?: @"Failed to launch Node.js.";
-    }
-    return NO;
-  }
-
-  [task waitUntilExit];
-  NSData *stdoutData = [[stdoutPipe fileHandleForReading] readDataToEndOfFile];
-  NSData *stderrData = [[stderrPipe fileHandleForReading] readDataToEndOfFile];
-  NSString *stdoutText = [[NSString alloc] initWithData:stdoutData encoding:NSUTF8StringEncoding] ?: @"";
-  NSString *stderrText = [[NSString alloc] initWithData:stderrData encoding:NSUTF8StringEncoding] ?: @"";
-
-  if (output != NULL) {
-    *output = stdoutText;
-  }
-  if (task.terminationStatus == 0) {
-    return YES;
-  }
-
-  if (errorMessage != NULL) {
-    *errorMessage = stderrText.length > 0 ? stderrText : (stdoutText.length > 0 ? stdoutText : @"Node.js command failed.");
-  }
-  return NO;
-}
-
-static NSString *FindNativeNode(BOOL *useArm64Runner) {
-  NSArray<NSString *> *candidates = @[
-    @"/opt/homebrew/bin/node",
-    @"/usr/local/bin/node",
-    @"/usr/bin/node"
-  ];
-  NSFileManager *fileManager = [NSFileManager defaultManager];
-  BOOL appleSilicon = IsAppleSilicon();
-
-  for (NSString *candidate in candidates) {
-    if (![fileManager isExecutableFileAtPath:candidate]) {
-      continue;
-    }
-
-    if (!appleSilicon) {
-      *useArm64Runner = NO;
-      return candidate;
-    }
-
-    NSString *archs = RunAndCapture(@"/usr/bin/lipo", @[@"-archs", candidate]);
-    if ([archs rangeOfString:@"arm64"].location != NSNotFound) {
-      *useArm64Runner = YES;
-      return candidate;
-    }
-  }
-
-  return nil;
-}
-
 static int RunAction(NSString *action, NSString *successMessage) {
-  BOOL useArm64Runner = NO;
-  NSString *nodePath = FindNativeNode(&useArm64Runner);
-  if (nodePath == nil) {
-    ShowAlert(AppName, @"Native arm64 Node.js was not found. Install the Apple Silicon build from https://nodejs.org or Homebrew under /opt/homebrew, then run this manager again. No Rosetta is required.");
-    return 1;
-  }
-
+  NSString *discordDataDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/discord"];
   NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
-  NSString *scriptPath = [resourcePath stringByAppendingPathComponent:@"scripts/desktop-core-action.js"];
   NSString *payloadSource = [resourcePath stringByAppendingPathComponent:@"payload"];
-  NSString *errorMessage = nil;
-  NSString *output = nil;
-  BOOL ok = RunNodeAndCapture(nodePath, useArm64Runner, @[
-    scriptPath,
-    action,
-    @"--payload-source",
-    payloadSource
-  ], &output, &errorMessage);
+  NSError *error = nil;
+  BOOL ok = [action isEqualToString:@"install"]
+    ? BabelInstall(discordDataDir, payloadSource, &error)
+    : BabelUninstall(discordDataDir, &error);
   if (ok) {
     ShowAlert(AppName, successMessage);
     return 0;
   }
 
-  ShowAlert(AppName, errorMessage ?: @"Babel action failed.");
+  ShowAlert(AppName, error.localizedDescription ?: @"Babel action failed.");
   return 1;
 }
 
@@ -305,7 +196,7 @@ int main(int argc, const char *argv[]) {
 `;
 }
 
-function plist(name) {
+function plist(name, version) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -321,7 +212,7 @@ function plist(name) {
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>${escapeXml(version)}</string>
   <key>CFBundleVersion</key>
   <string>1</string>
 </dict>
@@ -350,5 +241,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  managerSource
+  managerSource,
+  plist
 };
