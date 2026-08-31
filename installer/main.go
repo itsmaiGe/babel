@@ -39,7 +39,7 @@ func runInstall() {
 	if err != nil {
 		status = friendlyActionError("安装", err)
 	} else {
-		status = msg + "\n\n安装成功。接下来只需：\n1. 在系统托盘右键 Discord，选择「退出 Discord」\n2. 重新打开 Discord\n\n不需要关闭或重新打开本安装器。"
+		status = msg + "\n\n安装成功。接下来只需：\n1. 在系统托盘右键 Discord，选择「退出 Discord」\n2. 重新打开 Discord"
 	}
 	giu.Update()
 }
@@ -86,7 +86,6 @@ func loop() {
 	giu.SingleWindow().Layout(
 		giu.Dummy(0, 8),
 		giu.Label("Babel · Discord 翻译插件"),
-		giu.Label("一键为 Discord 安装 / 卸载翻译插件，无需 Node.js。").Wrapped(true),
 		giu.Dummy(0, 12),
 		giu.Separator(),
 		giu.Dummy(0, 12),

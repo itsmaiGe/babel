@@ -18,7 +18,10 @@ test("distribution verifier validates the DMG instead of the removed zip artifac
 });
 
 test("native manager bundle uses the package release version", () => {
-  assert.match(plist("Babel Manager", require("../package.json").version), /<key>CFBundleShortVersionString<\/key>\s*<string>0\.1\.4<\/string>/);
+  const version = require("../package.json").version;
+  assert.ok(plist("Babel Manager", version).includes(
+    `<key>CFBundleShortVersionString</key>\n  <string>${version}</string>`
+  ));
 });
 
 test("native manager does not depend on Node or an external installer process", () => {

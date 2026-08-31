@@ -2,7 +2,7 @@
 
 Babel 是一个用于 Discord 桌面版的翻译插件，支持 macOS 和 Windows。安装后可以在 Discord 里双击消息翻译，也可以把自己要发送的文字先翻译成目标语言再发出去。
 
-本文基于 Babel `v0.1.4` 编写。下载入口以 GitHub Releases 为准：
+本文基于 Babel `v0.1.5` 编写。下载入口以 GitHub Releases 为准：
 
 https://github.com/itsmaiGe/babel/releases/latest
 
