@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { getApiKeyStatus, insertAndSend, listModels, patchBrowserWindowOptions, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
+const { getApiKeyStatus, insertAndSend, listModels, patchBrowserWindowOptions, providerHttpError, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
 const { normalizeSettings } = require("../src/shared/settings");
 
 test("patchBrowserWindowOptions replaces Discord preload and preserves the original path", () => {
@@ -34,6 +34,20 @@ test("patchBrowserWindowOptions skips Discord splash preload", () => {
 
   assert.equal(options.webPreferences.preload, "/discord/splashScreenPreload.js");
   assert.equal(options.webPreferences.additionalArguments, undefined);
+});
+
+test("provider errors are converted to concise Chinese messages", () => {
+  assert.equal(providerHttpError(401, { error: { message: "invalid api key" } }), "API Key 无效或已过期，请重新填写。");
+  assert.equal(providerHttpError(429, { error: { code: "insufficient_quota", message: "quota exceeded" } }), "账户额度或余额不足，请充值后重试。");
+  assert.equal(providerHttpError(404, { error: { message: "model not found" } }), "找不到模型或接口，请检查模型地址和模型 ID。");
+  assert.equal(providerHttpError(503, null), "模型服务暂时不可用，请稍后重试。");
+});
+
+test("hosted providers reject a missing API key before making a request", async () => {
+  await assert.rejects(
+    listModels({ settings: normalizeSettings({ model: { provider: "openai" } }), apiKey: "" }),
+    /请先填写并保存 API Key/
+  );
 });
 
 test("insertAndSend obeys the persisted auto-send preference", async () => {

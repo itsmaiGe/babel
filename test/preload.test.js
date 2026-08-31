@@ -45,16 +45,41 @@ test("preload bridge searches Discord Switch with multiple native signatures", (
 test("preload bridge mounts Discord searchable combobox controls", () => {
   const source = fs.readFileSync(path.join(__dirname, "../src/mod/preload.js"), "utf8");
 
-  assert.ok(source.includes("ComboBoxField"));
-  assert.ok(source.includes("setFloating"));
-  assert.ok(source.includes("showChevronButton"));
+  assert.ok(source.includes("SearchableSelect"));
+  assert.ok(source.includes('?\"multiple\":\"single\",required:'));
   assert.ok(source.includes('detail.kind === "combobox"'));
   assert.ok(source.includes("function ComboBoxControl({ ui, detail, sendChange })"));
   assert.ok(source.includes("React.useEffect(() => {"));
   assert.ok(source.includes("h(ComboBoxControl, { ui, detail, sendChange })"));
+  assert.ok(source.includes("onSearchChange"));
+  assert.ok(source.includes("if (!nextValue) return;"));
   assert.equal(source.includes("ComboboxProvider"), false);
   assert.equal(source.includes("ComboboxListbox"), false);
   assert.equal(source.includes("dtm-combobox-popout"), false);
+});
+
+test("preload bridge follows Discord's current Select contract", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/mod/preload.js"), "utf8");
+
+  assert.ok(source.includes('selectionMode:\"single\",onSelectionChange:'));
+  assert.ok(source.includes("isSelected:"));
+  assert.ok(source.includes("select: next =>"));
+  assert.ok(source.includes("isSelected: next => next === value"));
+});
+
+test("preload bridge gives isolated native controls Discord's app-layer context", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/mod/preload.js"), "utf8");
+  const mountBody = source.slice(source.indexOf("function mount(detail)"));
+
+  assert.ok(source.includes("component.displayName === displayName"));
+  assert.ok(source.includes('findComponentByDisplayName(require, "AppLayerProvider")'));
+  assert.ok(source.includes("function wrapWithAppLayerContext(ui, element)"));
+  assert.ok(source.includes("appLayer.props.layerContext.Provider"));
+  assert.ok(source.includes("document.querySelectorAll(\"#app-mount [class*='layerContainer']\")"));
+  assert.ok(source.includes("layerContainers[layerContainers.length - 1]"));
+  assert.ok(mountBody.includes("const mountedElement = wrapWithAppLayerContext(ui, element);"));
+  assert.ok(mountBody.includes("root.render(mountedElement)"));
+  assert.ok(mountBody.includes("ui.ReactDOM.render(mountedElement, host)"));
 });
 
 test("preload bridge keeps updating controls on stable React component types", () => {

@@ -167,3 +167,12 @@ test("normalizeSettings accepts extended text decoration values", () => {
 
   assert.equal(settings.style.textDecoration, "line-through");
 });
+
+test("normalizeSettings accepts only supported translation positions", () => {
+  assert.equal(normalizeSettings({ style: { position: "above" } }).style.position, "above");
+  assert.equal(normalizeSettings({ style: { position: "below" } }).style.position, "below");
+  assert.equal(
+    normalizeSettings({ style: { position: "beside" } }).style.position,
+    DEFAULT_SETTINGS.style.position
+  );
+});

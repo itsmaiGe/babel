@@ -200,6 +200,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     opacity: 1
   },
   style: {
+    position: "below",
     textDecoration: "none",
     background: true,
     emphasis: "none",

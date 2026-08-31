@@ -4,6 +4,7 @@ const { DEFAULT_SETTINGS, MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS } = require
 
 const TEXT_DECORATIONS = new Set(["none", "underline", "wavy", "dotted", "dashed", "double", "line-through"]);
 const STYLE_EMPHASES = new Set(["none", "bold", "light", "marker", "underline", "wavy", "strike"]);
+const TRANSLATION_POSITIONS = new Set(["above", "below"]);
 const PROVIDER_IDS = new Set(MODEL_PROVIDERS.map(provider => provider.value));
 const TRANSLATION_STYLE_IDS = new Set(TRANSLATION_STYLE_PRESETS.map(style => style.value));
 
@@ -103,6 +104,9 @@ function normalizeSettings(input) {
   }
 
   if (isObject(source.style)) {
+    next.style.position = TRANSLATION_POSITIONS.has(source.style.position)
+      ? source.style.position
+      : next.style.position;
     next.style.textDecoration = TEXT_DECORATIONS.has(source.style.textDecoration)
       ? source.style.textDecoration
       : next.style.textDecoration;

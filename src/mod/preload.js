@@ -225,6 +225,17 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     return null;
   }
 
+  function findComponentByDisplayName(require, displayName) {
+    const found = findModule(require, component => {
+      const unwrapped = unwrapReactComponent(component);
+      return Boolean(
+        (component && component.displayName === displayName) ||
+        (unwrapped && unwrapped.displayName === displayName)
+      );
+    });
+    return unwrapReactComponent(found);
+  }
+
   let uiCache = null;
   let springRuntimeCache = null;
   function resolveUi() {
@@ -246,11 +257,13 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       typeof module.createRoot === "function" &&
       Object.keys(module).length <= 3);
     const createRoot = createRootModule && createRootModule.createRoot;
+    const AppLayerProvider = findComponentByDisplayName(require, "AppLayerProvider");
     const TextInput = findComponent(require, ['data-mana-component":"text-input']);
     const TextArea = findComponent(require, ['data-mana-component":"text-area']);
     const Field = findComponent(require, ["hideLabel", "helperText", "trailingAuxiliaryContent", "layoutConfig"]);
-    const Select = findComponent(require, ["selectionMode", "onSelectionChange", "maxOptionsVisible"]);
-    const ComboBoxField = findComponent(require, ["setFloating", "onQueryChange", "showChevronButton", "maxOptionsVisible"]);
+    // Keep these signatures aligned with Vencord's current Discord component map.
+    const Select = findComponent(require, ['selectionMode:"single",onSelectionChange:', "isSelected:"]);
+    const SearchableSelect = findComponent(require, ['?"multiple":"single",required:']);
     const Switch = findComponentAny(require, [
       ['role:"switch"', "SWITCH_BACKGROUND_SELECTED"],
       ["switchIndicator", "thumb", "data-mana-component"],
@@ -276,11 +289,12 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       React,
       ReactDOM,
       createRoot,
+      AppLayerProvider,
       TextInput,
       TextArea,
       Field,
       Select,
-      ComboBoxField,
+      SearchableSelect,
       Switch,
       Checkbox,
       Button,
@@ -290,6 +304,24 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       ShowToast: toastActionsModule && toastActionsModule.P0
     };
     return uiCache;
+  }
+
+  // Discord popouts portal through AppLayerContext; isolated React roots have no layer by default.
+  function wrapWithAppLayerContext(ui, element) {
+    if (!ui.AppLayerProvider) return element;
+    const layerContainers = document.querySelectorAll("#app-mount [class*='layerContainer']");
+    const layerContainer = layerContainers[layerContainers.length - 1];
+    if (!layerContainer) return element;
+
+    try {
+      const appLayer = ui.AppLayerProvider();
+      const LayerContextProvider = appLayer && appLayer.props &&
+        appLayer.props.layerContext && appLayer.props.layerContext.Provider;
+      if (!LayerContextProvider) return element;
+      return ui.React.createElement(LayerContextProvider, { value: [layerContainer] }, element);
+    } catch (_error) {
+      return element;
+    }
   }
 
   function resolveSpringRuntime() {
@@ -432,33 +464,31 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     React.useEffect(() => {
       setValue(detail.value);
     }, [detail.value]);
-    return h(ui.Select, {
-      label: detail.name || "",
-      options: detail.options,
-      value,
-      selectionMode: "single",
-      fullWidth: true,
-      formatOption: item => formatSelectOption(ui, item),
-      onSelectionChange: next => {
-        const nextValue = normalizeSelectedValue(next);
-        setValue(nextValue);
-        sendChange(nextValue);
-      },
-      serialize: next => String(next)
-    });
+    const options = (detail.options || []).map(formatSelectOption);
+    return h(ui.Field, { label: detail.name || "" },
+      h(ui.Select, {
+        options,
+        select: next => {
+          const nextValue = normalizeSelectedValue(next);
+          setValue(nextValue);
+          sendChange(nextValue);
+        },
+        isSelected: next => next === value,
+        serialize: next => String(next),
+        closeOnSelect: true,
+        renderOptionLabel: item => renderSelectOption(ui, item),
+        renderOptionValue: items => renderSelectOption(ui, (items || []).find(item => item.value === value))
+      })
+    );
   }
 
-  function formatSelectOption(ui, item) {
+  function formatSelectOption(item) {
     return {
       ...item,
       id: item.id || String(item.value),
       value: item.value,
       label: item.label,
-      disabled: item.disabled,
-      leading: item.leading,
-      trailing: item.apiKeySaved
-        ? providerApiKeyIcon(ui)
-        : item.trailing
+      disabled: item.disabled
     };
   }
 
@@ -469,6 +499,16 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       color: "currentColor",
       "aria-label": "已保存 API Key"
     });
+  }
+
+  function renderSelectOption(ui, item) {
+    if (!item) return null;
+    if (!item.apiKeySaved || !ui.LockIcon) return item.label;
+    const h = ui.React.createElement.bind(ui.React);
+    return h("span", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+      h("span", null, item.label),
+      providerApiKeyIcon(ui)
+    );
   }
 
   function ComboBoxControl({ ui, detail, sendChange }) {
@@ -487,10 +527,13 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     };
     const onQueryChange = next => {
       const nextValue = normalizeComboBoxQuery(next);
+      // SearchableSelect clears its transient query after selection/blur. An empty
+      // query is not a valid model id and must not erase the persisted selection.
+      if (!nextValue) return;
       setValue(nextValue);
       sendChange(nextValue);
     };
-    // Discord's ComboBox can only DISPLAY a value that exists in its options. A freely
+    // Discord's SearchableSelect can only display a value that exists in its options. A freely
     // typed value (e.g. a local model id that isn't in the preset list) would otherwise
     // vanish from the field on blur — the value is still kept, it just isn't shown. Keep
     // the current value present as an option so it stays visible. This happens inside the
@@ -499,17 +542,17 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     const options = value && !baseOptions.some(option => option && option.value === value)
       ? baseOptions.concat({ id: value, value, label: value })
       : baseOptions;
-    return h(ui.ComboBoxField, {
-      label: detail.name || "",
-      selectionMode: "single",
-      options,
-      value: value || null,
-      onSelectionChange: commit,
-      onQueryChange,
-      closeOnSelect: true,
-      maxOptionsVisible: 8,
-      placeholder: "输入或选择模型"
-    });
+    return h(ui.Field, { label: detail.name || "" },
+      h(ui.SearchableSelect, {
+        options,
+        value: value || null,
+        onChange: commit,
+        onSearchChange: onQueryChange,
+        closeOnSelect: true,
+        maxVisibleItems: 8,
+        placeholder: "输入或选择模型"
+      })
+    );
   }
 
   function TextControl({ ui, detail, sendChange }) {
@@ -615,7 +658,7 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     if (!host) return;
     const ui = resolveUi();
     if (!ui) {
-      emit("dtm:control-mounted", { id: detail.id, ok: false, error: "Discord UI components were not found." });
+      emit("dtm:control-mounted", { id: detail.id, ok: false, error: "未找到 Discord 原生 UI 组件。" });
       return;
     }
 
@@ -626,8 +669,8 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       emit("dtm:control-change", { id: detail.id, value });
     }
 
-    if (detail.kind === "combobox" && !ui.ComboBoxField) {
-      emit("dtm:control-mounted", { id: detail.id, ok: false, error: "Discord ComboBoxField was not found." });
+    if (detail.kind === "combobox" && !ui.SearchableSelect) {
+      emit("dtm:control-mounted", { id: detail.id, ok: false, error: "未找到 Discord 可搜索下拉框组件。" });
       return;
     }
 
@@ -639,6 +682,7 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
         : detail.kind === "translation-preview" ? h(TranslationPreviewControl, { ui, detail })
           : detail.kind === "button" ? h(ButtonControl, { ui, detail })
             : h(TextControl, { ui, detail, sendChange });
+    const mountedElement = wrapWithAppLayerContext(ui, element);
 
     try {
       let root = roots.get(detail.id);
@@ -646,9 +690,9 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
         root = ui.createRoot(host);
         roots.set(detail.id, root);
       }
-      if (root && typeof root.render === "function") root.render(element);
-      else if (ui.ReactDOM && typeof ui.ReactDOM.render === "function") ui.ReactDOM.render(element, host);
-      else throw new Error("React renderer was not found.");
+      if (root && typeof root.render === "function") root.render(mountedElement);
+      else if (ui.ReactDOM && typeof ui.ReactDOM.render === "function") ui.ReactDOM.render(mountedElement, host);
+      else throw new Error("未找到 React 渲染器。");
       emit("dtm:control-mounted", { id: detail.id, ok: true });
     } catch (error) {
       emit("dtm:control-mounted", { id: detail.id, ok: false, error: String(error && error.message || error) });

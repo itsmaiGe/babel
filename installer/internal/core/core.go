@@ -4,6 +4,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,6 +13,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+)
+
+var (
+	ErrDiscordNotFound = errors.New("未找到 Discord 安装目录")
+	ErrDiscordCore     = errors.New("未找到 Discord desktop core")
 )
 
 const (
@@ -25,18 +31,74 @@ const (
 )
 
 var (
-	appDirRe      = regexp.MustCompile(`^app-(\d+)\.(\d+)\.(\d+)$`)
-	coreWrapRe    = regexp.MustCompile(`^discord_desktop_core-(\d+)$`)
-	babelBlockRe  = regexp.MustCompile("(?s)" + regexp.QuoteMeta(BlockStart) + ".*?" + regexp.QuoteMeta(BlockEnd) + "\\n?")
+	appDirRe     = regexp.MustCompile(`^app-(\d+)\.(\d+)\.(\d+)$`)
+	coreWrapRe   = regexp.MustCompile(`^discord_desktop_core-(\d+)$`)
+	babelBlockRe = regexp.MustCompile("(?s)" + regexp.QuoteMeta(BlockStart) + ".*?" + regexp.QuoteMeta(BlockEnd) + "\\n?")
 )
 
-// DiscordBaseDir returns the platform Discord modules directory (Local on Windows).
+// DiscordBaseDir returns the first detected Discord installation base directory.
 func DiscordBaseDir() string {
+	if dirs := FindDiscordBaseDirs(); len(dirs) > 0 {
+		return dirs[0]
+	}
 	if v := os.Getenv("LOCALAPPDATA"); v != "" {
 		return filepath.Join(v, "Discord")
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "AppData", "Local", "Discord")
+}
+
+// FindDiscordBaseDirs mirrors Vencord's Windows discovery: LOCALAPPDATA is the
+// source of truth and may itself live on a non-C drive.
+func FindDiscordBaseDirs() []string {
+	local := os.Getenv("LOCALAPPDATA")
+	if local == "" {
+		return nil
+	}
+	names := []string{"Discord", "DiscordPTB", "DiscordCanary", "DiscordDevelopment"}
+	dirs := make([]string, 0, len(names))
+	for _, name := range names {
+		candidate := filepath.Join(local, name)
+		cores, err := ResolveAllCoreDirs(candidate)
+		if err == nil && len(cores) > 0 {
+			dirs = append(dirs, candidate)
+		}
+	}
+	return dirs
+}
+
+// NormalizeDiscordBaseDir accepts the Discord base folder, an app-* folder, or
+// Discord.exe. Walking ancestors keeps manual selection forgiving without parsing
+// Windows shortcuts or adding another dependency.
+func NormalizeDiscordBaseDir(input string) (string, error) {
+	cleaned := strings.Trim(strings.TrimSpace(input), "\"")
+	if cleaned == "" {
+		return "", ErrDiscordNotFound
+	}
+	current := filepath.Clean(cleaned)
+	info, err := os.Stat(current)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return "", fmt.Errorf("无法读取 Discord 路径 %s: %w", current, err)
+		}
+		return "", fmt.Errorf("%w：%s", ErrDiscordNotFound, current)
+	}
+	if !info.IsDir() {
+		current = filepath.Dir(current)
+	}
+
+	for attempts := 0; attempts < 8; attempts++ {
+		cores, readErr := ResolveAllCoreDirs(current)
+		if readErr == nil && len(cores) > 0 {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", fmt.Errorf("%w：%s", ErrDiscordCore, cleaned)
 }
 
 // ConfigStoreDir returns the plugin's config directory (settings.json, api-keys.json,
@@ -63,7 +125,10 @@ func fileExists(p string) bool {
 func ResolveAllCoreDirs(baseDir string) ([]string, error) {
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("Discord folder not found at %s. Is Discord installed?", baseDir)
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("无法读取 Discord 目录 %s: %w", baseDir, err)
+		}
+		return nil, fmt.Errorf("%w：%s", ErrDiscordNotFound, baseDir)
 	}
 
 	type versioned struct {
@@ -135,7 +200,7 @@ func ResolveCoreDir(baseDir string) (string, error) {
 		return "", err
 	}
 	if len(dirs) == 0 {
-		return "", fmt.Errorf("no Discord desktop core module found under %s", baseDir)
+		return "", fmt.Errorf("%w：%s", ErrDiscordCore, baseDir)
 	}
 	return dirs[0], nil
 }
@@ -202,6 +267,10 @@ func copyPayload(payload fs.FS, dest string) error {
 // Install patches the newest Discord core to load the embedded payload, backing
 // up the original loader first. payload is the embedded plugin file tree.
 func Install(baseDir string, payload fs.FS) (string, error) {
+	baseDir, err := NormalizeDiscordBaseDir(baseDir)
+	if err != nil {
+		return "", err
+	}
 	core, err := ResolveCoreDir(baseDir)
 	if err != nil {
 		return "", err
@@ -244,11 +313,15 @@ func Install(baseDir string, payload fs.FS) (string, error) {
 		os.Remove(backupPath)
 	}
 
-	return "Installed Babel into:\n" + core, nil
+	return "Babel 已安装到：\n" + core, nil
 }
 
 // Uninstall restores the original loader and removes the payload from every core.
 func Uninstall(baseDir string) (string, error) {
+	baseDir, err := NormalizeDiscordBaseDir(baseDir)
+	if err != nil {
+		return "", err
+	}
 	dirs, err := ResolveAllCoreDirs(baseDir)
 	if err != nil {
 		return "", err
@@ -301,5 +374,5 @@ func Uninstall(baseDir string) (string, error) {
 		}
 	}
 
-	return fmt.Sprintf("Removed Babel from %d desktop core item(s).", changed), nil
+	return fmt.Sprintf("Babel 已卸载，共清理 %d 项。", changed), nil
 }

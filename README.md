@@ -35,7 +35,8 @@ token is used and Discord's private APIs are never called.
   OpenAI-compatible model ID, or connect directly to Ollama / LM Studio without a key.
 - **Native styling** — the settings UI reuses Discord's own components and follows the
   active theme. Style translations with background on/off, marker / wavy / bold / faded,
-  custom colors, and fonts. Translation styles include a custom prompt option.
+  custom colors, fonts, and placement above or below the original message. Translation
+  styles include a custom prompt option.
 - **Proxy-aware** — provider requests go through Electron's network stack, so they honor
   your system / Discord proxy (a common cause of "fetch failed" on other plugins).
 
@@ -45,7 +46,10 @@ Grab the latest installer from the [**Releases**](https://github.com/itsmaiGe/ba
 
 ### Windows
 Download **`Babel-Installer.exe`** — a single self-contained app (Go + giu GUI, plugin
-embedded; no Node.js required). Double-click it, then click **Install**.
+embedded; no Node.js required). Double-click it, then click **安装**. The installer
+detects standard Discord installations through `%LOCALAPPDATA%` regardless of drive;
+for a portable or moved installation, paste the Discord folder, `app-*` folder, or
+`Discord.exe` path into the installer.
 
 ### macOS
 Download **`Babel Manager.dmg`**, open it, and run **Babel Manager** (drag it to
@@ -60,8 +64,8 @@ reopen it. Babel then appears in **Discord Settings → Babel**.
 
 1. Open **Discord Settings → Babel**.
 2. Under **Model**, choose your AI provider and model and paste your API key.
-3. Under **Translation**, set your read/send target languages, tone, enable the send box
-   and/or auto-translate.
+3. Configure incoming messages under **Message Translation**, outgoing text under
+   **Send Translation**, and appearance under **Translation Appearance**.
 4. Double-click a message to translate it; use the floating box to translate-and-send.
 
 ## Staying updated

@@ -66,3 +66,15 @@ test("native manager supports install and uninstall actions in one app", () => {
   assert.match(source, /RunAction\(@"install"/);
   assert.match(source, /RunAction\(@"uninstall"/);
 });
+
+test("Windows installer dependencies are reproducibly pinned", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const goMod = fs.readFileSync(path.join(__dirname, "../installer/go.mod"), "utf8");
+  const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/build.yml"), "utf8");
+
+  assert.match(goMod, /github\.com\/AllenDang\/giu v0\.15\.0/);
+  assert.match(workflow, /github\.com\/akavel\/rsrc@v0\.10\.2/);
+  assert.doesNotMatch(workflow, /@latest/);
+  assert.doesNotMatch(workflow, /go mod tidy/);
+});

@@ -13,6 +13,12 @@ import (
 func fakeDiscord(t *testing.T, versions ...string) string {
 	t.Helper()
 	base := t.TempDir()
+	makeDiscordAt(t, base, versions...)
+	return base
+}
+
+func makeDiscordAt(t *testing.T, base string, versions ...string) {
+	t.Helper()
 	for _, v := range versions {
 		core := filepath.Join(base, "app-"+v, "modules", "discord_desktop_core-1", "discord_desktop_core")
 		if err := os.MkdirAll(core, 0o755); err != nil {
@@ -22,7 +28,6 @@ func fakeDiscord(t *testing.T, versions ...string) string {
 		write(t, filepath.Join(core, "package.json"), "{}")
 		write(t, filepath.Join(core, "index.js"), VanillaIndex)
 	}
-	return base
 }
 
 func write(t *testing.T, p, content string) {
@@ -34,10 +39,10 @@ func write(t *testing.T, p, content string) {
 
 func samplePayload() fstest.MapFS {
 	return fstest.MapFS{
-		"main.js":          {Data: []byte("exports.install=()=>{}")},
-		"preload.js":       {Data: []byte("// preload")},
-		"renderer.js":      {Data: []byte("// renderer")},
-		"shared/util.js":   {Data: []byte("// shared")},
+		"main.js":        {Data: []byte("exports.install=()=>{}")},
+		"preload.js":     {Data: []byte("// preload")},
+		"renderer.js":    {Data: []byte("// renderer")},
+		"shared/util.js": {Data: []byte("// shared")},
 	}
 }
 
@@ -49,6 +54,35 @@ func TestResolveCoreDirPicksNewestVersion(t *testing.T) {
 	}
 	if !strings.Contains(core, filepath.Join("app-1.0.10", "modules")) {
 		t.Fatalf("expected newest version app-1.0.10, got %s", core)
+	}
+}
+
+func TestFindDiscordBaseDirsUsesLocalAppDataAcrossDrives(t *testing.T) {
+	local := t.TempDir()
+	stable := filepath.Join(local, "Discord")
+	makeDiscordAt(t, stable, "1.0.1")
+	t.Setenv("LOCALAPPDATA", local)
+
+	got := FindDiscordBaseDirs()
+	if len(got) != 1 || got[0] != stable {
+		t.Fatalf("expected detected Discord at %s, got %#v", stable, got)
+	}
+}
+
+func TestNormalizeDiscordBaseDirAcceptsBaseAppDirAndExe(t *testing.T) {
+	base := fakeDiscord(t, "1.0.1")
+	appDir := filepath.Join(base, "app-1.0.1")
+	exe := filepath.Join(appDir, "Discord.exe")
+	write(t, exe, "exe")
+
+	for _, input := range []string{base, appDir, exe} {
+		got, err := NormalizeDiscordBaseDir(input)
+		if err != nil {
+			t.Fatalf("NormalizeDiscordBaseDir(%s): %v", input, err)
+		}
+		if got != base {
+			t.Fatalf("NormalizeDiscordBaseDir(%s) = %s, want %s", input, got, base)
+		}
 	}
 }
 

@@ -43,6 +43,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 8000;
 const MAX_TRANSLATE_CHARS = 12000;
 const MODEL_LIST_TIMEOUT_MS = 30000;
 const TRANSLATE_TIMEOUT_MS = 30000;
+const API_KEY_REQUIRED_PROVIDERS = new Set(["openai", "google", "anthropic", "deepseek", "zhipu", "kimi", "openrouter"]);
 
 let installed = false;
 let patchedBrowserWindow = false;
@@ -229,7 +230,7 @@ function registerIpcHandlers(electron) {
 
 async function insertAndSend(webContents, text) {
   const outgoingText = String(text || "").trim();
-  if (!outgoingText) return { ok: false, error: "Nothing to send." };
+  if (!outgoingText) return { ok: false, error: "没有可发送的文本。" };
   const send = readSettings().sendTranslation.enterToSend;
 
   await webContents.insertText(outgoingText);
@@ -296,13 +297,13 @@ async function openSettingsFile(electron) {
   if (!fs.existsSync(filePath)) saveSettings(readSettings());
   const directoryPath = path.dirname(filePath);
   const error = await electron.shell.openPath(directoryPath);
-  if (error) throw new Error(error);
+  if (error) throw new Error("无法打开配置文件夹，请稍后重试。");
   return { ok: true, path: directoryPath };
 }
 
 async function openExternal(electron, url) {
   const value = String(url || "").trim();
-  if (!/^https:\/\//i.test(value)) return { ok: false, error: "Only https links are allowed." };
+  if (!/^https:\/\//i.test(value)) return { ok: false, error: "只允许打开 HTTPS 链接。" };
   await electron.shell.openExternal(value);
   return { ok: true, url: value };
 }
@@ -487,6 +488,7 @@ async function listModels(request) {
   const apiKey = request && Object.prototype.hasOwnProperty.call(request, "apiKey")
     ? String(request.apiKey || "").trim()
     : getApiKey(modelConfig.provider);
+  requireApiKey(modelConfig, apiKey);
   const requestData = buildModelListRequest(modelConfig, apiKey);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), MODEL_LIST_TIMEOUT_MS);
@@ -514,14 +516,11 @@ async function listModels(request) {
     }
 
     if (!response.ok) {
-      const detail = body && body.error && body.error.message
-        ? body.error.message
-        : responseText.slice(0, 300);
-      throw new Error(`Model list request failed (${response.status}): ${detail}`);
+      throw new Error(providerHttpError(response.status, body, responseText));
     }
 
     const models = parseModelListResponse(body, modelConfig.provider);
-    if (models.length === 0) throw new Error("Model list is empty.");
+    if (models.length === 0) throw new Error("没有可用模型，请检查模型地址和 API 权限。");
 
     return { ok: true, models };
   } finally {
@@ -533,12 +532,13 @@ async function translateWithSettings(request, settings, apiKey) {
   const direction = request && request.direction === "send" ? "send" : "read";
   const text = String((request && request.text) || "").trim();
 
-  if (!settings.enabled) throw new Error("Translator is disabled.");
-  if (direction === "send" && !settings.sendTranslation.enabled) throw new Error("Send translation is disabled.");
-  if (!text) throw new Error("Nothing to translate.");
-  if (text.length > MAX_TRANSLATE_CHARS) throw new Error(`Text is too long. Limit is ${MAX_TRANSLATE_CHARS} characters.`);
+  if (!settings.enabled) throw new Error("Babel 已关闭。");
+  if (direction === "send" && !settings.sendTranslation.enabled) throw new Error("发送翻译输入框已关闭。");
+  if (!text) throw new Error("没有可翻译的文本。");
+  if (text.length > MAX_TRANSLATE_CHARS) throw new Error(`文本过长，最多支持 ${MAX_TRANSLATE_CHARS} 个字符。`);
 
   const modelConfig = resolveModelConfig(settings.model);
+  requireApiKey(modelConfig, apiKey);
   const messages = buildTranslationMessages({ text, direction, settings });
   const requestData = buildProviderRequest(modelConfig, messages, apiKey);
 
@@ -576,10 +576,7 @@ async function translateWithSettings(request, settings, apiKey) {
     }
 
     if (!response.ok) {
-      const detail = body && body.error && body.error.message
-        ? body.error.message
-        : responseText.slice(0, 300);
-      throw new Error(`Model request failed (${response.status}): ${detail}`);
+      throw new Error(providerHttpError(response.status, body, responseText));
     }
 
     return {
@@ -591,6 +588,37 @@ async function translateWithSettings(request, settings, apiKey) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function requireApiKey(modelConfig, apiKey) {
+  if (API_KEY_REQUIRED_PROVIDERS.has(modelConfig.provider) && !String(apiKey || "").trim()) {
+    throw new Error("请先填写并保存 API Key。");
+  }
+}
+
+function providerHttpError(status, body, responseText = "") {
+  const error = body && body.error;
+  const detail = [
+    error && typeof error === "object" ? error.code : "",
+    error && typeof error === "object" ? error.type : "",
+    error && typeof error === "object" ? error.message : error,
+    body && body.message,
+    responseText
+  ].filter(Boolean).join(" ").toLowerCase();
+  const insufficient = /insufficient|quota|balance|billing|credit|余额|额度/.test(detail);
+
+  if (status === 401) return "API Key 无效或已过期，请重新填写。";
+  if (status === 402 || ((status === 403 || status === 429) && insufficient)) {
+    return "账户额度或余额不足，请充值后重试。";
+  }
+  if (status === 403) return "API Key 没有访问该模型的权限。";
+  if (status === 404) return "找不到模型或接口，请检查模型地址和模型 ID。";
+  if (status === 408) return "模型请求超时，请重试。";
+  if (status === 413) return "文本过长，模型服务拒绝了请求。";
+  if (status === 429) return "请求过于频繁，请稍后重试。";
+  if (status === 400 || status === 422) return "请求参数有误，请检查模型地址和模型 ID。";
+  if (status >= 500) return "模型服务暂时不可用，请稍后重试。";
+  return `模型请求失败（HTTP ${Number(status) || "未知"}）。`;
 }
 
 function buildModelListRequest(modelConfig, apiKey) {
@@ -700,6 +728,9 @@ module.exports = {
   openSettingsFile,
   openExternal,
   patchBrowserWindowOptions,
+  /* @dtm-test-only:start */
+  providerHttpError,
+  /* @dtm-test-only:end */
   setApiKey,
   /* @dtm-test-only:start */
   setElectronForTests,

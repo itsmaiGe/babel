@@ -42,16 +42,16 @@ jobs:
         run: node scripts/prepare-installer-payload.js
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
       - name: Resolve Go deps
         working-directory: installer
-        run: go mod tidy
+        run: go mod download
       - name: Test install logic
         working-directory: installer
         run: go test ./internal/...
       - name: Embed exe icon
         working-directory: installer
-        run: go run github.com/akavel/rsrc@latest -ico babel.ico -o rsrc.syso
+        run: go run github.com/akavel/rsrc@v0.10.2 -ico babel.ico -o rsrc.syso
       - name: Build exe
         working-directory: installer
         env:

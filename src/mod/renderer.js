@@ -13,8 +13,9 @@ const SETTINGS_SECTION_ID_PREFIX = "dtm-settings-section-";
 const API_KEY_MASK = "************";
 const SETTINGS_SECTION_NAV = Object.freeze([
   { key: "model", label: "模型" },
-  { key: "translation", label: "翻译设置" },
-  { key: "style", label: "译文设置" }
+  { key: "read", label: "消息翻译" },
+  { key: "send", label: "发送翻译" },
+  { key: "style", label: "译文外观" }
 ]);
 const LANGUAGE_OPTIONS = [
   { value: "简体中文", label: "简体中文" },
@@ -36,6 +37,10 @@ const SEND_BOX_OPACITY_OPTIONS = [
   { value: "0.6", label: "60%" },
   { value: "0.5", label: "50%" },
   { value: "0.4", label: "40%" }
+];
+const TRANSLATION_POSITION_OPTIONS = [
+  { value: "below", label: "原文下方" },
+  { value: "above", label: "原文上方" }
 ];
 const FONT_OPTIONS = [
   { value: "var(--font-primary)", label: "Discord 默认" },
@@ -457,15 +462,21 @@ function ensureSettingsEntry() {
   const sidebar = findSettingsSidebar();
   if (!sidebar) return;
 
-  const languageItem = findSettingsSidebarItem(sidebar, [/^语言和时间$/, /^Language & Time$/i]);
-  const template = languageItem || findSettingsSidebarItem(sidebar, [
+  const languageItem = findSettingsSidebarSectionItem(sidebar, "language_and_time_panel")
+    || findSettingsSidebarItem(sidebar, [/^语言和时间$/, /^語言和時間$/, /^Language & Time$/i]);
+  const template = languageItem || findSettingsSidebarSectionItem(sidebar, "appearance_panel")
+    || findSettingsSidebarSectionItem(sidebar, "voice_and_video_panel")
+    || findSettingsSidebarItem(sidebar, [
     /^快捷键$/,
+    /^快速鍵$/,
     /^Keybinds$/i,
     /^外观$/,
+    /^外觀$/,
     /^Appearance$/i,
     /^语音和视频$/,
+    /^語音和視訊$/,
     /^Voice & Video$/i
-  ]);
+  ]) || findAnySettingsSidebarItem(sidebar);
   const existing = document.getElementById(SETTINGS_BUTTON_ID);
 
   if (existing) {
@@ -486,7 +497,7 @@ function ensureSettingsEntry() {
     return;
   }
 
-  const experienceHeader = findSettingsHeader(sidebar, [/^体验$/, /^Experience$/i, /^App Settings$/i]);
+  const experienceHeader = findSettingsHeader(sidebar, [/^体验$/, /^體驗$/, /^Experience$/i, /^App Settings$/i]);
   if (experienceHeader) {
     experienceHeader.insertAdjacentElement("afterend", entry);
     ensureSettingsSubnav(entry, sidebar);
@@ -500,7 +511,11 @@ function ensureSettingsEntry() {
 function cloneSettingsSidebarItem(template) {
   const entry = template.cloneNode(true);
   for (const node of entry.querySelectorAll("[id]")) node.removeAttribute("id");
+  for (const node of [entry, ...Array.from(entry.querySelectorAll("[data-list-item-id*='settings-sidebar']"))]) {
+    node.removeAttribute("data-list-item-id");
+  }
   entry.id = SETTINGS_BUTTON_ID;
+  entry.setAttribute("data-list-item-id", "settings-sidebar___babel");
   entry.setAttribute("aria-label", `${SETTINGS_LABEL} 设置`);
   entry.setAttribute("data-dtm-settings-entry", "true");
   entry.removeAttribute("aria-current");
@@ -999,40 +1014,64 @@ function findSettingsSidebar() {
   if (rootSidebar) return rootSidebar;
 
   const candidates = Array.from(document.querySelectorAll("nav, [role='navigation'], [role='tablist'], [class*='sidebar'], [class*='side']"));
-  return candidates.find(node => {
-    const box = node.getBoundingClientRect();
-    if (box.width < 120 || box.width > 420 || box.height < 260) return false;
-    const text = node.textContent || "";
-    return /My Account|Profiles|Privacy|Appearance|Voice|Keybinds|Notifications|账户|账号|个人资料|隐私|外观|语音|通知/.test(text);
-  }) || null;
+  return candidates.find(isSettingsSidebarCandidate) || null;
 }
 
 function findSettingsSidebarRoot() {
   const candidates = Array.from(document.querySelectorAll("aside[class*='sidebar'], [class*='standardSidebarView'] aside, [class*='layer'] aside[class*='sidebar']"));
 
-  return candidates.find(node => {
-    const box = node.getBoundingClientRect();
-    if (box.width < 120 || box.width > 420 || box.height < 260) return false;
+  return candidates.find(isSettingsSidebarCandidate) || null;
+}
 
-    const hiddenLabel = normalizeText(node.querySelector("[class*='hiddenVisually']")?.textContent);
-    if (/^Settings sidebar$/i.test(hiddenLabel)) return true;
+function isSettingsSidebarCandidate(node) {
+  const box = node.getBoundingClientRect();
+  if (box.width < 120 || box.width > 420 || box.height < 260) return false;
 
-    const text = node.textContent || "";
-    return /My Account|Profiles|Privacy|Appearance|Voice|Keybinds|Notifications|账户|账号|个人资料|隐私|外观|语音|通知/.test(text);
-  }) || null;
+  if (node.querySelector("[data-list-item-id*='settings-sidebar___']")) return true;
+
+  const hiddenLabel = normalizeText(node.querySelector("[class*='hiddenVisually']")?.textContent);
+  if (/^Settings sidebar$/i.test(hiddenLabel)) return true;
+
+  const text = node.textContent || "";
+  return /My Account|Profiles|Privacy|Appearance|Voice|Keybinds|Notifications|账户|账号|个人资料|隐私|外观|语音|通知|帳號|個人資料|隱私|外觀|語音|通知/.test(text);
+}
+
+function findSettingsSidebarSectionItem(sidebar, sectionId) {
+  const suffix = `___${sectionId}`;
+  const node = Array.from(sidebar.querySelectorAll("[data-list-item-id*='settings-sidebar___']"))
+    .find(candidate => String(candidate.getAttribute("data-list-item-id") || candidate.dataset.listItemId || "").endsWith(suffix));
+  return settingsSidebarItemRow(node);
+}
+
+function findAnySettingsSidebarItem(sidebar) {
+  const structural = sidebar.querySelector("[data-list-item-id*='settings-sidebar___']");
+  if (structural) return settingsSidebarItemRow(structural);
+  const sidebarBox = sidebar.getBoundingClientRect();
+  const node = Array.from(sidebar.querySelectorAll("button, [role='button'], [role='tab'], [tabindex], a, [class*='item']"))
+    .find(candidate => {
+      const box = candidate.getBoundingClientRect();
+      return box.width >= 80 && box.height >= 18 && box.height <= 72
+        && box.x >= sidebarBox.x - 8 && box.right <= sidebarBox.right + 8;
+    });
+  return settingsSidebarItemRow(node);
+}
+
+function settingsSidebarItemRow(node) {
+  if (!node) return null;
+  return node.closest("[role='listitem']") || node.closest("[class*='itemContainer']") || node;
 }
 
 function findSettingsSidebarItem(sidebar, patterns) {
   const sidebarBox = sidebar.getBoundingClientRect();
   const candidates = Array.from(sidebar.querySelectorAll("button, [role='button'], [role='tab'], [tabindex], a, [class*='item']"));
 
-  return candidates.find(node => {
+  return settingsSidebarItemRow(candidates.find(node => {
     const box = node.getBoundingClientRect();
     if (box.width < 80 || box.height < 18 || box.height > 72) return false;
     if (box.x < sidebarBox.x - 8 || box.right > sidebarBox.right + 8) return false;
     const text = normalizeText(node.textContent);
     return patterns.some(pattern => pattern.test(text));
-  }) || null;
+  }));
 }
 
 function findSettingsHeader(sidebar, patterns) {
@@ -1220,7 +1259,10 @@ async function openSettingsPanel(options = {}) {
   }, { placeholder: "例如：使用简短自然的游戏聊天语气，保留专有名词。" });
   customPromptHost.appendChild(customPromptField);
   const syncCustomPromptVisibility = () => {
-    customPromptHost.style.display = formState.translationStyle === "custom" ? "" : "none";
+    const display = formState.translationStyle === "custom" ? "" : "none";
+    customPromptHost.style.display = display;
+    const row = customPromptHost.closest("[data-dtm-native-setting-row='true']");
+    if (row) row.style.display = display;
   };
   syncCustomPromptVisibility();
 
@@ -1232,26 +1274,31 @@ async function openSettingsPanel(options = {}) {
       apiKeyFieldHost,
       buttonRow([refreshModels, testConnection])
     ], "model"),
-    section("翻译设置", [
+    section("消息翻译", [
       toggleRow("启用插件", formState.enabled, value => { formState.enabled = value; }),
-      toggleRow("启用发送翻译输入框", formState.sendTranslation.enabled, value => { formState.sendTranslation.enabled = value; }),
-      toggleRow("回车后自动发送", formState.sendTranslation.enterToSend, value => { formState.sendTranslation.enterToSend = value; }),
-      selectField("输入框透明度", String(formState.sendBox.opacity), SEND_BOX_OPACITY_OPTIONS, value => {
-        formState.sendBox.opacity = Number(value);
-      }),
       toggleRow("自动翻译新消息", formState.autoTranslate.enabled, value => { formState.autoTranslate.enabled = value; }),
       languageSelectField("阅读目标语言", formState.model.targetLanguage, value => { formState.model.targetLanguage = value; }),
-      languageSelectField("发送目标语言", formState.model.sendLanguage, value => { formState.model.sendLanguage = value; }),
       selectField("翻译风格", formState.translationStyle, TRANSLATION_STYLE_OPTIONS, value => {
         formState.translationStyle = value;
         syncCustomPromptVisibility();
       }),
       customPromptHost
-    ], "translation")
+    ], "read"),
+    section("发送翻译", [
+      toggleRow("启用发送翻译输入框", formState.sendTranslation.enabled, value => { formState.sendTranslation.enabled = value; }),
+      languageSelectField("发送目标语言", formState.model.sendLanguage, value => { formState.model.sendLanguage = value; }),
+      toggleRow("回车后自动发送", formState.sendTranslation.enterToSend, value => { formState.sendTranslation.enterToSend = value; }),
+      selectField("输入框透明度", String(formState.sendBox.opacity), SEND_BOX_OPACITY_OPTIONS, value => {
+        formState.sendBox.opacity = Number(value);
+      })
+    ], "send")
   );
 
-  body.append(section("译文设置", [
+  body.append(section("译文外观", [
     preview,
+    selectField("译文位置", formState.style.position, TRANSLATION_POSITION_OPTIONS, value => {
+      formState.style.position = value;
+    }),
     toggleRow("显示译文背景", formState.style.background, value => {
       formState.style.background = value;
       updateStylePreview();
@@ -1273,6 +1320,7 @@ async function openSettingsPanel(options = {}) {
       updateStylePreview();
     })
   ], "style"));
+  syncCustomPromptVisibility();
 
   openConfig.addEventListener("click", async () => {
     try {
@@ -1821,10 +1869,11 @@ function getMessageUnits(message) {
     // The quote译文 is anchored right under the (block-level) preview row.
     if (quoteText) units.push({ kind: "quote", anchor: quote, text: quoteText });
   }
-  const bodyText = unitText(messageContentEl(message, quote)) || (quote ? "" : unitText(message));
+  const content = messageContentEl(message, quote);
+  const bodyText = unitText(content) || (quote ? "" : unitText(message));
   // The body译文 always appends to the bottom of the message — a safe, block-level
   // spot — never anchored to the (possibly inline) content element.
-  if (bodyText) units.push({ kind: "content", anchor: null, text: bodyText });
+  if (bodyText) units.push({ kind: "content", anchor: null, source: content, text: bodyText });
   return units;
 }
 
@@ -1863,19 +1912,27 @@ function renderUnitTranslation(message, unit, text, options = {}) {
     block = document.createElement("div");
     block.className = "dtm-translation-block";
     block.dataset.dtmUnit = unit.kind;
-    // Place the译文 right under its own source (quote under the quote, body under
-    // the body) instead of always at the bottom of the message.
-    if (unit.anchor && typeof unit.anchor.insertAdjacentElement === "function" && unit.anchor.parentElement) {
-      unit.anchor.insertAdjacentElement("afterend", block);
-    } else {
-      message.appendChild(block);
-    }
   }
+  placeTranslationBlock(message, unit, block);
   block.dataset.dtmError = isError ? "true" : "false";
   block.dataset.dtmCacheHit = options.cacheHit ? "true" : "false";
   block.textContent = text;
   applyTranslationStyle(block, unit.kind === "quote");
   return block;
+}
+
+function placeTranslationBlock(message, unit, block) {
+  const above = settings.style.position === "above";
+  if (unit.anchor && typeof unit.anchor.insertAdjacentElement === "function" && unit.anchor.parentElement) {
+    unit.anchor.insertAdjacentElement(above ? "beforebegin" : "afterend", block);
+    return;
+  }
+  if (above && unit.source && typeof unit.source.insertAdjacentElement === "function" && unit.source.parentElement) {
+    unit.source.insertAdjacentElement("beforebegin", block);
+    return;
+  }
+  if (block.parentElement) block.remove();
+  message.appendChild(block);
 }
 
 function restoreVisibleTranslations(messages = visibleMessages()) {
@@ -1895,12 +1952,18 @@ function restoreVisibleTranslations(messages = visibleMessages()) {
 
 function refreshTranslationStyles() {
   for (const block of document.querySelectorAll(".dtm-translation-block")) {
+    const message = findMessage(block);
+    const unit = message && getMessageUnits(message).find(candidate => candidate.kind === block.dataset.dtmUnit);
+    if (message && unit) placeTranslationBlock(message, unit, block);
     applyTranslationStyle(block, block.dataset.dtmUnit === "quote");
   }
 }
 
 function applyTranslationStyle(block, small) {
   applyTranslationStyleObject(block, settings.style, block.dataset.dtmError === "true", small);
+  const above = settings.style.position === "above";
+  block.style.marginTop = above ? "0" : (settings.style.background === false ? "2px" : "6px");
+  block.style.marginBottom = above ? (settings.style.background === false ? "2px" : "6px") : "0";
 }
 
 function applyTranslationStyleObject(block, style, isError, small) {
@@ -2026,7 +2089,7 @@ function createSendBox() {
       const result = await nativeApi.translate({ direction: "send", text });
       input.value = "";
       const currentEditor = findDiscordEditor();
-      if (!currentEditor) throw new Error("Discord input box was not found.");
+      if (!currentEditor) throw new Error("未找到 Discord 原生输入框，请切换频道后重试。");
       currentEditor.focus();
       await wait(60);
       const outcome = await nativeApi.insertAndSend(result.text);
@@ -2766,6 +2829,7 @@ module.exports.__test = {
   runAutoTranslate,
   shouldSkipSameLanguage,
   snowflakeGreater,
-  restoreVisibleTranslations
+  restoreVisibleTranslations,
+  refreshTranslationStyles
 };
 /* @dtm-test-only:end */

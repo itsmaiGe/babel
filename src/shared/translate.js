@@ -88,7 +88,7 @@ function parseOpenAICompatibleResponse(body) {
     : "";
 
   if (!content.trim()) {
-    throw new Error("Model response did not include translated text.");
+    throw new Error("模型没有返回译文，请重试或更换模型。");
   }
 
   return content.trim();
@@ -103,7 +103,7 @@ function parseAnthropicResponse(body) {
     : "";
 
   if (!content.trim()) {
-    throw new Error("Model response did not include translated text.");
+    throw new Error("模型没有返回译文，请重试或更换模型。");
   }
 
   return content.trim();

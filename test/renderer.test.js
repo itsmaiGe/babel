@@ -105,6 +105,33 @@ test("ensureSettingsEntry inserts the settings item inside Discord's Experience 
   }
 });
 
+test("ensureSettingsEntry uses locale-independent Discord section ids", () => {
+  const previousDocument = global.document;
+  const document = new FakeDocument();
+  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
+  sidebar.className = "sidebar__409aa";
+
+  const appearance = settingsRow("外觀", 420, "settings-sidebar___appearance_panel");
+  const language = settingsRow("語言和時間", 462, "settings-sidebar___language_and_time_panel");
+  const activity = settingsRow("活動隱私", 504, "settings-sidebar___activity_privacy");
+  sidebar.append(appearance, language, activity);
+  document.appendChild(sidebar);
+
+  try {
+    global.document = document;
+    __test.ensureSettingsEntry();
+
+    const entry = document.getElementById(__test.SETTINGS_BUTTON_ID);
+    assert.ok(entry);
+    assert.equal(entry.previousElementSibling, language);
+    assert.equal(entry.textContent, __test.SETTINGS_LABEL);
+    assert.equal(entry.getAttribute("data-list-item-id"), "settings-sidebar___babel");
+  } finally {
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+  }
+});
+
 test("settings subnav stays hidden as a sibling until the mod settings entry is active", () => {
   const previousDocument = global.document;
   const previousElement = global.Element;
@@ -144,10 +171,10 @@ test("settings subnav stays hidden as a sibling until the mod settings entry is 
     const menuItems = list.children.filter(item => item.dataset.dtmSubnavTarget);
     assert.ok(thumb);
     assert.ok(trackThumb);
-    assert.deepEqual(menuItems.map(item => item.dataset.dtmSubnavTarget), ["model", "translation", "style"]);
-    assert.deepEqual(menuItems.map(item => item.textContent), ["模型", "翻译设置", "译文设置"]);
-    assert.equal(track.style.gridRow, "1 / span 3");
-    assert.equal(track.style.height, "92px");
+    assert.deepEqual(menuItems.map(item => item.dataset.dtmSubnavTarget), ["model", "read", "send", "style"]);
+    assert.deepEqual(menuItems.map(item => item.textContent), ["模型", "消息翻译", "发送翻译", "译文外观"]);
+    assert.equal(track.style.gridRow, "1 / span 4");
+    assert.equal(track.style.height, "128px");
     assert.equal(subnav.textContent.includes("原生二级菜单"), false);
     assert.equal(subnav.textContent.includes("密码和安全中心"), false);
     assert.ok(menuItems.every(item => item.getAttribute("role") === "listitem"));
@@ -173,14 +200,14 @@ test("settings subnav stays hidden as a sibling until the mod settings entry is 
     const styleSection = new FakeElement("section");
     styleSection.id = "dtm-settings-section-style";
     document.append(panel, styleSection);
-    __test.onDocumentClick({ target: menuItems[2] });
+    __test.onDocumentClick({ target: menuItems[3] });
     assert.equal(document.getElementById(__test.SETTINGS_PANEL_ID), panel);
-    menuItems[2].listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
+    menuItems[3].listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
     // Clicking moves the indicator straight to the target (no scroll-spy stutter).
     assert.equal(menuItems[0].querySelector("[class*='active']"), null);
-    assert.ok(menuItems[2].querySelector("[class*='active']"));
-    assert.equal(thumb.style.gridRow, "3");
-    assert.equal(trackThumb.style.transform, "translate3d(0px, 72px, 0px)");
+    assert.ok(menuItems[3].querySelector("[class*='active']"));
+    assert.equal(thumb.style.gridRow, "4");
+    assert.equal(trackThumb.style.transform, "translate3d(0px, 108px, 0px)");
     assert.equal(styleSection.scrollIntoViewOptions.behavior, "smooth");
     panel.remove();
     styleSection.remove();
@@ -214,11 +241,13 @@ test("settings subnav indicator follows the visible settings section while scrol
   panel.id = __test.SETTINGS_PANEL_ID;
   const model = new FakeElement("section", "", rect(280, -120, 760, 220));
   model.id = "dtm-settings-section-model";
-  const translation = new FakeElement("section", "", rect(280, 80, 760, 220));
-  translation.id = "dtm-settings-section-translation";
+  const read = new FakeElement("section", "", rect(280, 80, 760, 120));
+  read.id = "dtm-settings-section-read";
+  const send = new FakeElement("section", "", rect(280, 220, 760, 120));
+  send.id = "dtm-settings-section-send";
   const style = new FakeElement("section", "", rect(280, 260, 760, 220));
   style.id = "dtm-settings-section-style";
-  panel.append(model, translation, style);
+  panel.append(model, read, send, style);
   document.append(sidebar, panel);
 
   try {
@@ -240,12 +269,13 @@ test("settings subnav indicator follows the visible settings section while scrol
     assert.equal(thumb.style.gridRow, "2");
     assert.equal(trackThumb.style.transform, "translate3d(0px, 36px, 0px)");
 
+    send.box.y = 90;
     style.box.y = 100;
     __test.syncSettingsSubnavToScroll(panel);
     assert.equal(menuItems[1].querySelector("[class*='active']"), null);
-    assert.ok(menuItems[2].querySelector("[class*='active']"));
-    assert.equal(thumb.style.gridRow, "3");
-    assert.equal(trackThumb.style.transform, "translate3d(0px, 72px, 0px)");
+    assert.ok(menuItems[3].querySelector("[class*='active']"));
+    assert.equal(thumb.style.gridRow, "4");
+    assert.equal(trackThumb.style.transform, "translate3d(0px, 108px, 0px)");
   } finally {
     if (previousDocument) global.document = previousDocument;
     else delete global.document;
@@ -725,8 +755,8 @@ test("settings source renders model selection as one searchable Discord combo bo
   assert.ok(source.includes("renderModelField();\n      showNativeToast(`已刷新 ${models.length} 个模型`, \"success\")"));
   assert.ok(source.includes("modelComboBoxHostFor(\"匹配模型\""));
   assert.ok(source.includes("kind: \"combobox\""));
-  assert.equal(source.includes("ComboBoxField"), false);
-  assert.ok(preloadSource.includes("ComboBoxField"));
+  assert.equal(source.includes("SearchableSelect"), false);
+  assert.ok(preloadSource.includes("SearchableSelect"));
   assert.equal(source.includes("ComboboxProvider"), false);
   assert.equal(source.includes("ComboboxListbox"), false);
   assert.equal(source.includes("dtm-combobox-popout"), false);
@@ -743,8 +773,8 @@ test("settings source lets Discord render the model listbox without a custom pop
 
   assert.equal(source.includes("setFloating"), false);
   assert.equal(source.includes("showChevronButton"), false);
-  assert.ok(preloadSource.includes("setFloating"));
-  assert.ok(preloadSource.includes("showChevronButton"));
+  assert.ok(preloadSource.includes("onSearchChange"));
+  assert.ok(preloadSource.includes("maxVisibleItems"));
   assert.equal(source.includes(".dtm-combobox-popout"), false);
   assert.equal(source.includes(".dtm-combobox-popout {\n      background: var(--background-floating"), false);
   assert.equal(source.includes("[data-mana-component='listbox']"), false);
@@ -790,7 +820,7 @@ test("provider select keeps API key status separate from selected option labels"
 
   assert.equal(source.includes("renderOptionLabel: item => renderSelectOptionLabel"), false);
   assert.equal(source.includes("formatOption: item => formatSelectOption"), false);
-  assert.ok(preloadSource.includes("formatOption: item => formatSelectOption(ui, item)"));
+  assert.ok(preloadSource.includes("renderOptionLabel: item => renderSelectOption(ui, item)"));
   assert.ok(preloadSource.includes("LockIcon"));
   assert.equal(source.includes(".dtm-provider-select-field [class*='selectedIcon']"), false);
   assert.equal(source.includes("已保存 API Key\" }, \"✓\""), false);
@@ -853,8 +883,9 @@ test("settings source delegates subnav thumb movement to Discord main-world spri
 test("settings source shows translation style controls directly without advanced disclosure", () => {
   const source = fs.readFileSync(path.join(__dirname, "../src/mod/renderer.js"), "utf8");
 
-  assert.ok(source.includes("section(\"译文设置\""));
-  assert.ok(source.includes("section(\"翻译设置\""));
+  assert.ok(source.includes("section(\"译文外观\""));
+  assert.ok(source.includes("section(\"消息翻译\""));
+  assert.ok(source.includes("section(\"发送翻译\""));
   assert.equal(source.includes("advancedSettings(["), false);
   assert.equal(source.includes("function advancedSettings"), false);
   assert.equal(source.includes("button(\"高级设置\""), false);
@@ -1157,6 +1188,57 @@ test("reply messages translate the body and the quoted preview as separate units
   }
 });
 
+test("translation position places each translation above or below its own source", async () => {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  const message = new FakeElement("div", "", rect(0, 0, 600, 160));
+  message.id = "chat-messages-position-1";
+  const quote = new FakeElement("div", "", rect(0, 0, 400, 20));
+  quote.className = "repliedMessage__abc";
+  const quoteText = new FakeElement("div", "quoted", rect(0, 0, 380, 16));
+  quoteText.className = "repliedTextContent__abc";
+  quote.appendChild(quoteText);
+  const contentWrap = new FakeElement("div", "", rect(0, 24, 400, 50));
+  contentWrap.className = "contents__abc";
+  const content = new FakeElement("div", "body", rect(0, 24, 400, 24));
+  content.className = "messageContent__abc";
+  contentWrap.appendChild(content);
+  message.append(quote, contentWrap);
+  document.appendChild(message);
+
+  try {
+    global.document = document;
+    global.Element = FakeElement;
+    __test.setRuntimeForTests({
+      settings: {
+        enabled: true,
+        readTranslation: { enabled: true, cache: true },
+        model: { targetLanguage: "简体中文" },
+        style: { position: "above" }
+      },
+      nativeApi: { translate: async ({ text }) => ({ ok: true, text: "T:" + text }) }
+    });
+
+    await __test.translateMessage(message);
+    const quoteBlock = message.querySelector("[data-dtm-unit='quote']");
+    const bodyBlock = message.querySelector("[data-dtm-unit='content']");
+    assert.equal(quote.previousElementSibling, quoteBlock);
+    assert.equal(content.previousElementSibling, bodyBlock);
+
+    __test.setRuntimeForTests({ settings: { style: { position: "below" } } });
+    __test.refreshTranslationStyles();
+    assert.equal(quote.nextElementSibling, quoteBlock);
+    assert.equal(message.children[message.children.length - 1], bodyBlock);
+  } finally {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  }
+});
+
 test("send translation box mounts above the Discord native composer", () => {
   const previousDocument = global.document;
   const document = new FakeDocument();
@@ -1233,6 +1315,8 @@ test("settings page source does not contain hand rolled select, switch animation
   assert.ok(source.includes("selectField(\"AI 平台\""));
   assert.ok(source.includes("selectField(\"翻译风格\""));
   assert.ok(source.includes('inputField("自定义提示词", "textarea"'));
+  assert.ok(source.includes('customPromptHost.closest("[data-dtm-native-setting-row=\'true\']")'));
+  assert.ok(source.includes("if (row) row.style.display = display;"));
   assert.ok(source.includes('toggleRow("回车后自动发送"'));
   assert.ok(source.includes('selectField("输入框透明度"'));
   assert.ok(source.includes("applySendBoxOpacity"));
@@ -1248,10 +1332,14 @@ function settingsHeader(text, y) {
   return node;
 }
 
-function settingsRow(text, y) {
+function settingsRow(text, y, listItemId = "") {
   const row = new FakeElement("div", "", rect(20, y, 220, 34));
   row.className = "item__409aa nativeItem__409aa";
   row.setAttribute("role", "button");
+  if (listItemId) {
+    row.setAttribute("data-list-item-id", listItemId);
+    row.dataset.listItemId = listItemId;
+  }
 
   const icon = new FakeElement("span", "", rect(28, y + 7, 20, 20));
   icon.className = "icon__409aa";
@@ -1410,11 +1498,15 @@ class FakeElement {
   }
 
   insertAdjacentElement(position, element) {
-    assert.equal(position, "afterend");
-    const siblings = this.parentElement.children;
+    const parent = this.parentElement;
+    if (!parent) return null;
+    if (element.parentElement) element.remove();
+    const siblings = parent.children;
     const index = siblings.indexOf(this);
-    element.parentElement = this.parentElement;
-    siblings.splice(index + 1, 0, element);
+    element.parentElement = parent;
+    if (position === "beforebegin") siblings.splice(index, 0, element);
+    else if (position === "afterend") siblings.splice(index + 1, 0, element);
+    else assert.fail(`unsupported insertAdjacentElement position: ${position}`);
     return element;
   }
 
