@@ -9,11 +9,13 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
   window.__discordTranslatorMainWorldBridge = true;
 
   const instances = [];
-  const roots = new Map();
-  const subnavThumbSprings = new Map();
+  const controls = new Map();
+  const sectionRefresh = new Map();
+  const settingsRoots = new WeakSet();
+  const settingsFactories = new WeakSet();
+  let settingsSpec = null;
   const handledInboundMessageIds = new Set();
   let outboundMessageId = 0;
-  const SUBNAV_THUMB_SPRING_CONFIG = { mass: .1, friction: 20, tension: 300 };
   const TOAST_POSITION_BOTTOM = 1;
   function defineOwn(target, key, value, enumerable = true) {
     Object.defineProperty(target, key, { configurable: true, enumerable, writable: true, value });
@@ -63,6 +65,7 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       configurable: true,
       enumerable: false,
       set(modules) {
+        wrapSettingsFactories(modules);
         defineOwn(this, "m", modules);
         const require = this;
         if (!looksLikeDiscordWebpackRequire(require)) return;
@@ -122,6 +125,7 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
 
   function safeFilter(filter, value) {
     try {
+      if (value?.[Symbol.toStringTag] === "IntlMessagesProxy") return false;
       return Boolean(filter(value));
     } catch (_error) {
       return false;
@@ -217,27 +221,97 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     return findModule(require, module => isComponentMatchingCode(module, code)) || requireFactoryMatch(require, code);
   }
 
-  function findComponentAny(require, signatures) {
-    for (const signature of signatures) {
-      const found = findComponent(require, signature);
-      if (found) return found;
+  let composerApi = null;
+  let sendTarget = null;
+  let sendId = 0;
+
+  function resolveComposerApi() {
+    if (composerApi) return composerApi;
+    const require = getRequire();
+    if (!require) throw new Error("Discord 输入框尚未就绪，请稍后重试。");
+    const ChannelEditor = findModule(require, value => isFunctionMatchingCode(value, ["appendText", "handleInsertText", "saveCurrentText"]));
+    const serialize = findModule(require, value => isFunctionMatchingCode(value, ["ignoreTrailingEmptyNodes", "preventEmojiSurrogates", ".range"]));
+    const Slate = findModule(require, value => value && typeof value.toDOMNode === "function" && typeof value.focus === "function");
+    const selectedChannel = findModule(require, value => value && typeof value.getChannelId === "function" && typeof value.getVoiceChannelId === "function");
+    const dispatcher = findModule(require, value => value && typeof value.dispatch === "function" &&
+      typeof value.subscribe === "function" && typeof value.unsubscribe === "function" && typeof value.wait === "function");
+    if (!ChannelEditor || !serialize || !Slate || !selectedChannel || !dispatcher) {
+      throw new Error("未能连接 Discord 原生输入框，请重启 Discord 后重试。");
     }
-    return null;
+    dispatcher.subscribe("CHANNEL_SELECT", () => cancelSend());
+    composerApi = { ChannelEditor, serialize, Slate, selectedChannel };
+    return composerApi;
   }
 
-  function findComponentByDisplayName(require, displayName) {
-    const found = findModule(require, component => {
-      const unwrapped = unwrapReactComponent(component);
-      return Boolean(
-        (component && component.displayName === displayName) ||
-        (unwrapped && unwrapped.displayName === displayName)
-      );
-    });
-    return unwrapReactComponent(found);
+  function currentComposer() {
+    const api = resolveComposerApi();
+    const dom = document.querySelector("[role='textbox'][contenteditable='true']");
+    const key = dom && Object.keys(dom).find(key => key.startsWith("__reactFiber$"));
+    let editor, form;
+    for (let fiber = key && dom[key]; fiber; fiber = fiber.return) {
+      const instance = fiber.stateNode;
+      if (!editor && instance instanceof api.ChannelEditor) editor = instance;
+      if (editor && instance && instance.editorRef === editor && typeof instance.handleSendMessage === "function") {
+        form = instance;
+        break;
+      }
+    }
+    const handle = editor && editor.ref.current;
+    const slate = handle && handle.getSlateEditor?.();
+    const channelId = editor && editor.props.channel?.id;
+    if (!dom?.isConnected || !form || !slate || editor.props.useSlate !== true || editor.props.disabled ||
+        editor.state.submitting || slate.composition || editor.props.type.analyticsName !== "normal" ||
+        api.Slate.toDOMNode(slate, slate) !== dom || api.selectedChannel.getChannelId() !== channelId ||
+        form.props.channel.id !== channelId) {
+      throw new Error("请先打开频道，并退出消息编辑，再使用翻译输入框。");
+    }
+    return { dom, editor, form, handle, slate, channelId };
   }
+
+  function cancelSend(id) {
+    if (!sendTarget || (id != null && id !== sendTarget.id)) return;
+    sendTarget.slate.events.off("onChange", sendTarget.onChange);
+    sendTarget = null;
+  }
+
+  function beginSend(send) {
+    cancelSend();
+    const target = currentComposer();
+    const api = resolveComposerApi();
+    const draft = api.serialize(target.slate.children, { mode: "raw" });
+    if (draft.trim()) {
+      throw new Error("Discord 输入框已有草稿，请先发送或清空，原文已保留。");
+    }
+    const id = ++sendId;
+    sendTarget = { ...target, id, send: send === true, reply: target.form.props.pendingReply,
+      onChange: () => {
+        if (api.serialize(target.slate.children, { mode: "raw" }) !== draft) cancelSend(id);
+      } };
+    target.slate.events.on("onChange", sendTarget.onChange);
+    return id;
+  }
+
+  function insertAndSend({ id, text }) {
+    const target = sendTarget;
+    if (!target || target.id !== id) throw new Error("频道或草稿已改变，原文已保留，请重新翻译。");
+    cancelSend(id);
+    const current = currentComposer();
+    if (current.dom !== target.dom || current.editor !== target.editor || current.slate !== target.slate ||
+        current.channelId !== target.channelId || current.form !== target.form || current.form.props.pendingReply !== target.reply ||
+        resolveComposerApi().serialize(current.slate.children, { mode: "raw" }).trim()) {
+      throw new Error("频道或草稿已改变，原文已保留，请重新翻译。");
+    }
+    if (typeof text !== "string" || !text.trim()) throw new Error("模型没有返回译文，原文已保留。");
+    // Slate updates synchronously; its submit path reads the same editor state.
+    current.handle.insertText(text, text, false);
+    if (target.send) current.handle.submit();
+    else current.handle.focus();
+    return { ok: true, sent: target.send };
+  }
+
+  window.__discordTranslatorComposer = { beginSend, insertAndSend, cancelSend };
 
   let uiCache = null;
-  let springRuntimeCache = null;
   function resolveUi() {
     if (uiCache) return uiCache;
     const require = getRequire();
@@ -253,24 +327,13 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       typeof module.createPortal === "function" &&
       typeof module.flushSync === "function" &&
       typeof module.createElement !== "function");
-    const createRootModule = findDirectModule(require, module => module &&
-      typeof module.createRoot === "function" &&
-      Object.keys(module).length <= 3);
-    const createRoot = createRootModule && createRootModule.createRoot;
-    const AppLayerProvider = findComponentByDisplayName(require, "AppLayerProvider");
     const TextInput = findComponent(require, ['data-mana-component":"text-input']);
     const TextArea = findComponent(require, ['data-mana-component":"text-area']);
     const Field = findComponent(require, ["hideLabel", "helperText", "trailingAuxiliaryContent", "layoutConfig"]);
     // Keep these signatures aligned with Vencord's current Discord component map.
     const Select = findComponent(require, ['selectionMode:"single",onSelectionChange:', "isSelected:"]);
     const SearchableSelect = findComponent(require, ['?"multiple":"single",required:']);
-    const Switch = findComponentAny(require, [
-      ['role:"switch"', "SWITCH_BACKGROUND_SELECTED"],
-      ["switchIndicator", "thumb", "data-mana-component"],
-      ['data-mana-component":"switch'],
-      ["aria-checked", "role", "switch"]
-    ]);
-    const Checkbox = findComponent(require, ['data-toggleable-component":"checkbox']);
+    const Switch = findComponent(require, ["switchIconsEnabled", "hasIcon"]);
     const Button = findComponent(require, ['data-mana-component":"button']);
     const LockIcon = findComponent(require, ["M6 9h1V6a5 5", "clipRule"]);
     const toastModule = findModuleObject(require, exports => exports &&
@@ -284,19 +347,16 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     const toastActionsModule = findModuleObject(require, exports => exports &&
       typeof exports.P0 === "function" &&
       isFunctionMatchingCode(exports.P0, ["currentToastMap", "queuedToastsMap"]), ["currentToastMap", "queuedToastsMap"]);
-    if (!React || !Field || !Select || (!Switch && !Checkbox)) return null;
+    if (!React || !Field || !Select || !Switch) return null;
     uiCache = {
       React,
       ReactDOM,
-      createRoot,
-      AppLayerProvider,
       TextInput,
       TextArea,
       Field,
       Select,
       SearchableSelect,
       Switch,
-      Checkbox,
       Button,
       LockIcon,
       CreateToast: toastModule && toastModule.o,
@@ -306,118 +366,115 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     return uiCache;
   }
 
-  // Discord popouts portal through AppLayerContext; isolated React roots have no layer by default.
-  function wrapWithAppLayerContext(ui, element) {
-    if (!ui.AppLayerProvider) return element;
-    const layerContainers = document.querySelectorAll("#app-mount [class*='layerContainer']");
-    const layerContainer = layerContainers[layerContainers.length - 1];
-    if (!layerContainer) return element;
-
-    try {
-      const appLayer = ui.AppLayerProvider();
-      const LayerContextProvider = appLayer && appLayer.props &&
-        appLayer.props.layerContext && appLayer.props.layerContext.Provider;
-      if (!LayerContextProvider) return element;
-      return ui.React.createElement(LayerContextProvider, { value: [layerContainer] }, element);
-    } catch (_error) {
-      return element;
+  // Register before Discord builds its settings directory, including lazy-loaded chunks.
+  function wrapSettingsFactories(modules) {
+    for (const [id, factory] of Object.entries(modules || {})) {
+      if (typeof factory !== "function" || settingsFactories.has(factory) ||
+          !Function.prototype.toString.call(factory).includes('analyticsKey:"user_settings"')) continue;
+      const wrapped = function(module, exports, require) {
+        factory.call(this, module, exports, require);
+        const root = findExportInModule(module.exports, value => value && value.key === "$Root" && value.analyticsKey === "user_settings");
+        if (root) installSettingsRoot(root, require);
+      };
+      settingsFactories.add(wrapped);
+      modules[id] = wrapped;
     }
   }
 
-  function resolveSpringRuntime() {
-    if (springRuntimeCache) return springRuntimeCache;
-    const require = getRequire();
-    if (!require || !require.c) return null;
-    springRuntimeCache = findDirectModule(require, module => module &&
-      typeof module.Controller === "function" &&
-      typeof module.SpringValue === "function" &&
-      typeof module.useSpring === "function");
-    return springRuntimeCache;
-  }
-
-  function findSubnavThumb(id) {
-    if (!/^dtm-subnav-thumb-\d+$/.test(String(id || ""))) return null;
-    return document.querySelector('[data-dtm-subnav-thumb-id="' + id + '"]');
-  }
-
-  function findSubnavThumbAnchor(thumb) {
-    const track = thumb && thumb.parentElement;
-    const list = track && track.parentElement;
-    if (!list) return null;
-    return Array.from(list.children).find(child => String(child.className || "").includes("thumbAnchor")) || null;
-  }
-
-  function subnavThumbTarget(thumb) {
-    const track = thumb && thumb.parentElement;
-    const anchor = findSubnavThumbAnchor(thumb);
-    if (!track || !anchor) return null;
-    const trackRect = track.getBoundingClientRect();
-    const anchorRect = anchor.getBoundingClientRect();
-    const unit = trackRect.width / 2 || 1;
-    return {
-      y: (anchorRect.y - trackRect.y) / unit,
-      height: anchorRect.height / unit
+  function watchSettingsChunks(chunks) {
+    for (const chunk of chunks) wrapSettingsFactories(chunk[1]);
+    let push;
+    const wrapPush = next => function(...args) {
+      for (const chunk of args) if (Array.isArray(chunk)) wrapSettingsFactories(chunk[1]);
+      return next.apply(this, args);
     };
+    push = wrapPush(chunks.push);
+    Object.defineProperty(chunks, "push", {
+      configurable: true,
+      get: () => push,
+      set: next => { push = wrapPush(next); }
+    });
   }
 
-  function formatCssPixel(value) {
-    const rounded = Math.round(Number(value || 0) * 1000) / 1000;
-    return String(Object.is(rounded, -0) ? 0 : rounded) + "px";
-  }
+  if (Array.isArray(window.webpackChunkdiscord_app)) watchSettingsChunks(window.webpackChunkdiscord_app);
+  else Object.defineProperty(window, "webpackChunkdiscord_app", {
+    configurable: true,
+    get: () => undefined,
+    set: chunks => {
+      defineOwn(window, "webpackChunkdiscord_app", chunks);
+      if (Array.isArray(chunks)) watchSettingsChunks(chunks);
+    }
+  });
 
-  function applySubnavThumbFrame(thumb, value) {
-    if (!thumb || !thumb.style || !value) return;
-    const y = Number(value.y || 0);
-    const height = Number(value.height || 0);
-    thumb.style.transform = Math.abs(y) < 0.5 ? "none" : "translate3d(0px, " + formatCssPixel(y) + ", 0px)";
-    if (Number.isFinite(height) && height > 0) thumb.style.height = formatCssPixel(height);
-  }
-
-  function animateSubnavThumb(id, state) {
-    if (!state || state.frame != null) return;
-    const step = () => {
-      const thumb = findSubnavThumb(id);
-      if (!thumb) {
-        state.controller.dispose();
-        subnavThumbSprings.delete(id);
-        return;
-      }
-      applySubnavThumbFrame(thumb, state.controller.get());
-      if (state.controller.idle) {
-        state.frame = null;
-        return;
-      }
-      state.frame = window.requestAnimationFrame(step);
+  function installSettingsRoot(root, require) {
+    if (settingsRoots.has(root)) return;
+    const types = findModule(require, value => value && typeof value.SECTION === "number" &&
+      typeof value.SIDEBAR_ITEM === "number" && typeof value.CATEGORY === "number" && typeof value.CUSTOM === "number");
+    if (!types) return;
+    const buildLayout = root.buildLayout;
+    root.buildLayout = function() {
+      const sections = buildLayout.call(this);
+      if (!settingsSpec) return sections;
+      const item = {
+        key: "babel_sidebar_item", type: types.SIDEBAR_ITEM,
+        useTitle: () => settingsSpec.title,
+        icon: BabelIcon,
+        buildLayout: () => [{
+          key: "babel_panel", type: types.PANEL, useTitle: () => settingsSpec.title,
+          buildLayout: () => settingsSpec.sections.map(section => ({
+            key: "babel_" + section.key, type: types.CATEGORY,
+            useTitle: () => section.label,
+            buildLayout: () => [{
+              key: "babel_" + section.key + "_controls", type: types.CUSTOM,
+              Component: () => resolveUi().React.createElement(SettingsSection, { section })
+            }]
+          }))
+        }]
+      };
+      return sections.map(section => {
+        const items = section.buildLayout();
+        const index = items.findIndex(entry => entry.key === "language_and_time_sidebar_item");
+        if (index < 0) return section;
+        return { ...section, buildLayout: () => [...items.slice(0, index + 1), item, ...items.slice(index + 1)] };
+      });
     };
-    state.frame = window.requestAnimationFrame(step);
+    settingsRoots.add(root);
   }
 
-  function syncSubnavThumb(detail) {
-    const id = detail && detail.id;
-    const thumb = findSubnavThumb(id);
-    const target = subnavThumbTarget(thumb);
-    if (!thumb || !target) return;
-
-    const SpringRuntime = resolveSpringRuntime();
-    const Controller = SpringRuntime && SpringRuntime.Controller;
-    if (!Controller) {
-      applySubnavThumbFrame(thumb, target);
-      return;
-    }
-
-    let state = subnavThumbSprings.get(id);
-    if (!state) {
-      const controller = new Controller({ ...target, config: SUBNAV_THUMB_SPRING_CONFIG });
-      state = { controller, frame: null };
-      subnavThumbSprings.set(id, state);
-      applySubnavThumbFrame(thumb, target);
-      return;
-    }
-
-    state.controller.start({ ...target, config: SUBNAV_THUMB_SPRING_CONFIG });
-    animateSubnavThumb(id, state);
+  function BabelIcon(props) {
+    return resolveUi().React.createElement("svg", {
+      ...props, width: 20, height: 20, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
+      dangerouslySetInnerHTML: { __html: settingsSpec.icon }
+    });
   }
 
+  function SettingsSection({ section }) {
+    const ui = resolveUi();
+    const [, update] = ui.React.useState(0);
+    ui.React.useLayoutEffect(() => {
+      sectionRefresh.set(section.key, () => update(value => value + 1));
+      emit("dtm:settings-open", {});
+      return () => {
+        sectionRefresh.delete(section.key);
+        for (const [id, control] of controls) if (control.section === section.key) controls.delete(id);
+        if (sectionRefresh.size === 0) emit("dtm:settings-close", {});
+      };
+    }, [section.key]);
+    const portals = Array.from(controls, ([id, control]) => control.section === section.key
+      ? ui.ReactDOM.createPortal(control.element, control.host, id) : null).filter(Boolean);
+    return ui.React.createElement("div", { id: "dtm-settings-slot-" + section.key, "data-dtm-section-key": section.key }, portals);
+  }
+
+  function unmountControls(detail) {
+    const sections = new Set();
+    for (const id of detail.ids || []) {
+      const control = controls.get(id);
+      if (control) sections.add(control.section);
+      controls.delete(id);
+    }
+    for (const section of sections) sectionRefresh.get(section)?.();
+  }
   function emit(name, detail) {
     outboundMessageId += 1;
     const payload = { ...detail, __dtmMessageId: "dtm-main-" + outboundMessageId };
@@ -587,7 +644,6 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
   function ToggleControl({ ui, detail, sendChange }) {
     const React = ui.React;
     const h = React.createElement.bind(React);
-    const Toggle = ui.Switch || ui.Checkbox;
     const state = React.useState(Boolean(detail.value));
     const value = state[0];
     const setValue = state[1];
@@ -601,9 +657,7 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       setValue(nextValue);
       sendChange(nextValue);
     };
-    return h(ui.Field, { label: detail.name || "", layout: "horizontal" },
-      h(Toggle, { checked: value, onChange: handleChange })
-    );
+    return h(ui.Switch, { label: detail.name || "", checked: value, disabled: Boolean(detail.disabled), onChange: handleChange });
   }
 
   function TranslationPreviewControl({ ui, detail }) {
@@ -611,7 +665,7 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
     const h = ui.React.createElement.bind(ui.React);
     return h(ui.Field, { label: detail.name || "预览" },
       h("div", null,
-        h("div", { "data-dtm-style-preview-block": "true", style: translationPreviewStyle(detail.style || {}, false) }, "这是译文样式预览")
+        h("div", { "data-dtm-style-preview-block": "true", style: detail.style }, "这是译文样式预览")
       )
     );
   }
@@ -625,32 +679,6 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       disabled: Boolean(detail.disabled),
       loading: Boolean(detail.loading)
     });
-  }
-
-  function translationPreviewStyle(style, isError) {
-    const emphasis = style.emphasis || "none";
-    const backgroundOn = style.background !== false;
-    const markerBand = "linear-gradient(transparent 54%, color-mix(in srgb, currentColor 24%, transparent) 54%, color-mix(in srgb, currentColor 24%, transparent) 92%, transparent 92%)";
-    return {
-      display: "inline-block",
-      boxSizing: "border-box",
-      padding: backgroundOn ? "9px 13px" : "1px 0 0",
-      border: backgroundOn ? "1px solid color-mix(in srgb, currentColor 14%, transparent)" : "1px solid transparent",
-      boxShadow: backgroundOn ? "0 1px 2px rgba(0, 0, 0, .12)" : "none",
-      lineHeight: "1.45",
-      backgroundColor: backgroundOn ? (style.backgroundColor || "var(--background-secondary)") : "transparent",
-      backgroundImage: emphasis === "marker" ? markerBand : "none",
-      color: isError ? "#ffb3b8" : style.textColor || "var(--text-normal)",
-      opacity: emphasis === "light" ? "0.72" : "1",
-      fontWeight: emphasis === "bold" ? "700" : "400",
-      borderRadius: Number(style.borderRadius || 0) + "px",
-      fontFamily: style.fontFamily || "inherit",
-      fontSize: Number(style.fontSize || 13) + "px",
-      textDecorationLine: emphasis === "strike"
-        ? "line-through"
-        : (emphasis === "underline" || emphasis === "wavy") ? "underline" : "none",
-      textDecorationStyle: emphasis === "wavy" ? "wavy" : "solid"
-    };
   }
 
   function mount(detail) {
@@ -682,17 +710,14 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
         : detail.kind === "translation-preview" ? h(TranslationPreviewControl, { ui, detail })
           : detail.kind === "button" ? h(ButtonControl, { ui, detail })
             : h(TextControl, { ui, detail, sendChange });
-    const mountedElement = wrapWithAppLayerContext(ui, element);
+    const section = host.closest("[data-dtm-section-key]");
+    const key = section && section.dataset.dtmSectionKey;
+    const refresh = sectionRefresh.get(key);
+    if (!refresh) return;
 
     try {
-      let root = roots.get(detail.id);
-      if (!root && ui.createRoot) {
-        root = ui.createRoot(host);
-        roots.set(detail.id, root);
-      }
-      if (root && typeof root.render === "function") root.render(mountedElement);
-      else if (ui.ReactDOM && typeof ui.ReactDOM.render === "function") ui.ReactDOM.render(mountedElement, host);
-      else throw new Error("未找到 React 渲染器。");
+      controls.set(detail.id, { element, host, section: key });
+      refresh();
       emit("dtm:control-mounted", { id: detail.id, ok: true });
     } catch (error) {
       emit("dtm:control-mounted", { id: detail.id, ok: false, error: String(error && error.message || error) });
@@ -713,7 +738,8 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
 
   window.addEventListener("dtm:mount-control", event => handleInboundMessage(event.detail, mount));
   window.addEventListener("dtm:show-toast", event => handleInboundMessage(event.detail, showToast));
-  window.addEventListener("dtm:sync-subnav-thumb", event => handleInboundMessage(event.detail, syncSubnavThumb));
+  window.addEventListener("dtm:unmount-controls", event => handleInboundMessage(event.detail, unmountControls));
+  window.addEventListener("dtm:settings-config", event => handleInboundMessage(event.detail, detail => { settingsSpec = detail; }));
   window.addEventListener("message", event => {
     const data = event.data || {};
     if (event.source !== window || data.source !== "dtm") return;
@@ -725,7 +751,8 @@ const MAIN_WORLD_BRIDGE_SOURCE = String.raw`
       handleInboundMessage(data.detail, showToast);
       return;
     }
-    if (data.type === "dtm:sync-subnav-thumb") handleInboundMessage(data.detail, syncSubnavThumb);
+    if (data.type === "dtm:unmount-controls") handleInboundMessage(data.detail, unmountControls);
+    if (data.type === "dtm:settings-config") handleInboundMessage(data.detail, detail => { settingsSpec = detail; });
   });
 })();
 `;
@@ -780,6 +807,13 @@ function runOriginalPreload() {
 
 runOriginalPreload();
 
+async function callComposer(method, argument) {
+  const result = await webFrame.executeJavaScript("(() => { try { return { value: window.__discordTranslatorComposer[" +
+    JSON.stringify(method) + "](" + JSON.stringify(argument) + ") }; } catch (error) { return { error: String(error.message || error) }; } })()");
+  if (result.error) throw new Error(result.error);
+  return result.value;
+}
+
 const api = Object.freeze({
   getSettings: () => ipcRenderer.invoke("dtm:get-settings"),
   saveSettings: settings => ipcRenderer.invoke("dtm:save-settings", settings),
@@ -788,7 +822,9 @@ const api = Object.freeze({
   translate: request => ipcRenderer.invoke("dtm:translate", request),
   testConnection: request => ipcRenderer.invoke("dtm:test-connection", request),
   listModels: request => ipcRenderer.invoke("dtm:list-models", request),
-  insertAndSend: text => ipcRenderer.invoke("dtm:insert-and-send", text),
+  beginSend: send => callComposer("beginSend", send),
+  insertAndSend: request => callComposer("insertAndSend", request),
+  cancelSend: id => callComposer("cancelSend", id),
   openSettingsFile: () => ipcRenderer.invoke("dtm:open-settings-file"),
   openExternal: url => ipcRenderer.invoke("dtm:open-external", url),
   loadCache: () => ipcRenderer.invoke("dtm:load-cache"),

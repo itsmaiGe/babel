@@ -185,6 +185,14 @@ BOOL BabelInstall(NSString *discordBaseDir, NSString *payloadSource, NSError **e
   return YES;
 }
 
+static BOOL RemoveItemIfPresent(NSString *path, NSError **error) {
+  NSError *removeError = nil;
+  if ([[NSFileManager defaultManager] removeItemAtPath:path error:&removeError]) return YES;
+  if ([removeError.domain isEqualToString:NSCocoaErrorDomain] && removeError.code == NSFileNoSuchFileError) return YES;
+  if (error != NULL) *error = removeError;
+  return NO;
+}
+
 BOOL BabelUninstall(NSString *discordBaseDir, NSError **error) {
   NSArray<NSString *> *cores = ResolveAllCoreDirectories(discordBaseDir, error);
   if (cores == nil) return NO;
@@ -198,15 +206,14 @@ BOOL BabelUninstall(NSString *discordBaseDir, NSError **error) {
       if (![BaseIndex(current) writeToFile:indexPath atomically:YES encoding:NSUTF8StringEncoding error:error]) return NO;
     } else if ([current containsString:LoaderMarker]) {
       if ([fm fileExistsAtPath:backupPath]) {
-        [fm removeItemAtPath:indexPath error:nil];
+        if (!RemoveItemIfPresent(indexPath, error)) return NO;
         if (![fm copyItemAtPath:backupPath toPath:indexPath error:error]) return NO;
       } else if (![VanillaIndex writeToFile:indexPath atomically:YES encoding:NSUTF8StringEncoding error:error]) {
         return NO;
       }
     }
-    [fm removeItemAtPath:backupPath error:nil];
-    [fm removeItemAtPath:payloadDest error:nil];
+    if (!RemoveItemIfPresent(backupPath, error)) return NO;
+    if (!RemoveItemIfPresent(payloadDest, error)) return NO;
   }
-  [fm removeItemAtPath:[discordBaseDir stringByAppendingPathComponent:PayloadDirName] error:nil];
-  return YES;
+  return RemoveItemIfPresent([discordBaseDir stringByAppendingPathComponent:PayloadDirName], error);
 }

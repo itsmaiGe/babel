@@ -25,7 +25,6 @@ const CHANNELS = Object.freeze({
   translate: "dtm:translate",
   testConnection: "dtm:test-connection",
   listModels: "dtm:list-models",
-  insertAndSend: "dtm:insert-and-send",
   openSettingsFile: "dtm:open-settings-file",
   openExternal: "dtm:open-external",
   loadCache: "dtm:load-cache",
@@ -225,22 +224,6 @@ function registerIpcHandlers(electron) {
   ipcMain.handle(CHANNELS.loadCache, () => loadTranslationCache());
   ipcMain.handle(CHANNELS.saveCache, (_event, cache) => saveTranslationCache(cache));
   ipcMain.handle(CHANNELS.checkUpdate, () => checkForUpdate());
-  ipcMain.handle(CHANNELS.insertAndSend, (event, text) => insertAndSend(event.sender, text));
-}
-
-async function insertAndSend(webContents, text) {
-  const outgoingText = String(text || "").trim();
-  if (!outgoingText) return { ok: false, error: "没有可发送的文本。" };
-  const send = readSettings().sendTranslation.enterToSend;
-
-  await webContents.insertText(outgoingText);
-  if (send) {
-    await wait(40);
-    webContents.sendInputEvent({ type: "keyDown", keyCode: "Enter" });
-    webContents.sendInputEvent({ type: "keyUp", keyCode: "Enter" });
-  }
-
-  return { ok: true, sent: send };
 }
 
 function getStoreDir() {
@@ -365,19 +348,36 @@ function getApiKeysPath() {
 }
 
 function readApiKeyStore() {
+  let store;
   try {
     const filePath = getApiKeysPath();
     if (!fs.existsSync(filePath)) return {};
     const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    store = data && typeof data === "object" && !Array.isArray(data) ? data : {};
   } catch (_error) {
     return {};
   }
+  if (!electronApi().safeStorage?.isEncryptionAvailable?.()) return store;
+  let migrated = false;
+  for (const [provider, entry] of Object.entries(store)) {
+    if (entry && entry.enc === "plain") {
+      store[provider] = encryptApiKey(decryptApiKey(entry));
+      migrated = true;
+    }
+  }
+  if (migrated) writeApiKeyStore(store);
+  return store;
 }
 
 function writeApiKeyStore(store) {
   fs.mkdirSync(getStoreDir(), { recursive: true });
-  fs.writeFileSync(getApiKeysPath(), `${JSON.stringify(store)}\n`, "utf8");
+  const temp = `${getApiKeysPath()}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(store)}\n`, { mode: 0o600 });
+    fs.renameSync(temp, getApiKeysPath());
+  } finally {
+    fs.rmSync(temp, { force: true });
+  }
 }
 
 function encryptApiKey(value) {
@@ -385,8 +385,7 @@ function encryptApiKey(value) {
   if (safeStorage && safeStorage.isEncryptionAvailable && safeStorage.isEncryptionAvailable()) {
     return { enc: "safeStorage", value: safeStorage.encryptString(value).toString("base64") };
   }
-  // No OS keyring available (e.g. some Linux setups): keep it local, base64-wrapped.
-  return { enc: "plain", value: Buffer.from(value, "utf8").toString("base64") };
+  throw new Error("系统加密暂不可用，API Key 未保存。请重启 Discord 后重试。");
 }
 
 function decryptApiKey(entry) {
@@ -490,42 +489,10 @@ async function listModels(request) {
     : getApiKey(modelConfig.provider);
   requireApiKey(modelConfig, apiKey);
   const requestData = buildModelListRequest(modelConfig, apiKey);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MODEL_LIST_TIMEOUT_MS);
-
-  try {
-    let response;
-    try {
-      response = await httpFetch(requestData.url, {
-        method: "GET",
-        headers: requestData.headers,
-        signal: controller.signal
-      });
-    } catch (error) {
-      if (error && error.name === "AbortError") throw new Error("请求超时，请重试。");
-      if (isNetworkFailure(error)) throw new Error(networkFailureMessage(error, requestData.url));
-      throw error;
-    }
-
-    const responseText = await response.text();
-    let body = null;
-    try {
-      body = responseText ? JSON.parse(responseText) : null;
-    } catch (_error) {
-      body = null;
-    }
-
-    if (!response.ok) {
-      throw new Error(providerHttpError(response.status, body, responseText));
-    }
-
-    const models = parseModelListResponse(body, modelConfig.provider);
-    if (models.length === 0) throw new Error("没有可用模型，请检查模型地址和 API 权限。");
-
-    return { ok: true, models };
-  } finally {
-    clearTimeout(timeout);
-  }
+  const body = await fetchProviderJson(requestData, "GET", MODEL_LIST_TIMEOUT_MS, "请求超时，请重试。");
+  const models = parseModelListResponse(body, modelConfig.provider);
+  if (models.length === 0) throw new Error("没有可用模型，请检查模型地址和 API 权限。");
+  return { ok: true, models };
 }
 
 async function translateWithSettings(request, settings, apiKey) {
@@ -541,32 +508,26 @@ async function translateWithSettings(request, settings, apiKey) {
   requireApiKey(modelConfig, apiKey);
   const messages = buildTranslationMessages({ text, direction, settings });
   const requestData = buildProviderRequest(modelConfig, messages, apiKey);
+  const body = await fetchProviderJson(requestData, "POST", TRANSLATE_TIMEOUT_MS,
+    `翻译超时（超过 ${Math.round(TRANSLATE_TIMEOUT_MS / 1000)} 秒），已自动取消，请重试。`);
+  return {
+    ok: true,
+    text: requestData.protocol === "anthropic"
+      ? parseAnthropicResponse(body)
+      : parseOpenAICompatibleResponse(body)
+  };
+}
 
+async function fetchProviderJson(requestData, method, timeoutMs, timeoutMessage) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
-
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    let response;
-    try {
-      response = await httpFetch(requestData.url, {
-        method: "POST",
-        headers: requestData.headers,
-        signal: controller.signal,
-        body: JSON.stringify(requestData.body)
-      });
-    } catch (error) {
-      // A timeout aborts the request; surface it as a clear, friendly message
-      // instead of a raw "The operation was aborted" so a stuck call never hangs.
-      if (error && error.name === "AbortError") {
-        throw new Error(`翻译超时（超过 ${Math.round(TRANSLATE_TIMEOUT_MS / 1000)} 秒），已自动取消，请重试。`);
-      }
-      // "fetch failed" → couldn't reach the provider at all; explain why.
-      if (isNetworkFailure(error)) {
-        throw new Error(networkFailureMessage(error, requestData.url));
-      }
-      throw error;
-    }
-
+    const response = await httpFetch(requestData.url, {
+      method,
+      headers: requestData.headers,
+      signal: controller.signal,
+      body: method === "POST" ? JSON.stringify(requestData.body) : undefined
+    });
     const responseText = await response.text();
     let body = null;
     try {
@@ -579,12 +540,11 @@ async function translateWithSettings(request, settings, apiKey) {
       throw new Error(providerHttpError(response.status, body, responseText));
     }
 
-    return {
-      ok: true,
-      text: requestData.protocol === "anthropic"
-        ? parseAnthropicResponse(body)
-        : parseOpenAICompatibleResponse(body)
-    };
+    return body;
+  } catch (error) {
+    if (controller.signal.aborted || error && error.name === "AbortError") throw new Error(timeoutMessage);
+    if (isNetworkFailure(error)) throw new Error(networkFailureMessage(error, requestData.url));
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -703,10 +663,6 @@ function anthropicMaxTokens(userMessages) {
   return Math.min(8192, Math.max(1024, estimate));
 }
 
-function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 /* @dtm-test-only:start — stripped from the shipped payload by the build/install copy */
 function setElectronForTests(electron) {
   runtimeElectron = electron;
@@ -718,9 +674,6 @@ module.exports = {
   checkForUpdate,
   compareVersions,
   getApiKeyStatus,
-  /* @dtm-test-only:start */
-  insertAndSend,
-  /* @dtm-test-only:end */
   install,
   listModels,
   loadTranslationCache,

@@ -72,6 +72,54 @@ test("native macOS installer migrates the legacy whole-file loader from its back
   }
 });
 
+for (const target of ["backup", "payload", "config"]) {
+  test(`native macOS uninstall reports ${target} cleanup permission failures and allows retry`, { skip: process.platform !== "darwin" }, () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-native-cleanup-"));
+    try {
+      const executable = compileHarness(temp);
+      const base = path.join(temp, "discord");
+      const core = path.join(base, "app-0.0.396/modules/discord_desktop_core-1/discord_desktop_core");
+      const originalIndex = "require('./betterdiscord.js');\nmodule.exports = require('./core.asar');\n";
+      const files = {
+        backup: path.join(core, "index.js.dtm-original"),
+        payload: path.join(core, "discord-translator-mod/main.js"),
+        config: path.join(base, "discord-translator-mod/settings.json")
+      };
+      for (const file of Object.values(files)) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, "fixture\n");
+      }
+      fs.writeFileSync(path.join(core, "core.asar"), "core");
+      fs.writeFileSync(path.join(core, "package.json"), "{}");
+      fs.writeFileSync(path.join(core, "index.js"), originalIndex);
+
+      // Restrict the parent: a file's own write bit does not prevent deletion.
+      const restrictedDir = path.dirname(files[target]);
+      const cleanupPath = target === "backup" ? files.backup : restrictedDir;
+      fs.chmodSync(restrictedDir, 0o555);
+      try {
+        const result = childProcess.spawnSync(executable, ["uninstall", base, ""], { encoding: "utf8" });
+        assert.equal(fs.existsSync(files[target]), true, "permission-restricted file must remain");
+        assert.equal(result.status, 1, `uninstall must report failed ${target} cleanup: ${result.stderr}`);
+        assert.match(result.stderr, /NSCocoaErrorDomain Code=513/);
+        assert.equal(result.stderr.includes(cleanupPath), true, result.stderr);
+        assert.equal(fs.readFileSync(path.join(core, "index.js"), "utf8"), originalIndex);
+      } finally {
+        fs.chmodSync(restrictedDir, 0o755);
+      }
+
+      runHarness(executable, "uninstall", base, "");
+      runHarness(executable, "uninstall", base, "");
+      assert.equal(fs.existsSync(files.backup), false);
+      assert.equal(fs.existsSync(path.dirname(files.payload)), false);
+      assert.equal(fs.existsSync(path.dirname(files.config)), false);
+      assert.equal(fs.readFileSync(path.join(core, "index.js"), "utf8"), originalIndex);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+}
+
 function compileHarness(temp) {
   const source = path.join(temp, "harness.m");
   const executable = path.join(temp, "native-installer-test");
@@ -88,7 +136,7 @@ int main(int argc, const char *argv[]) {
     BOOL ok = [action isEqualToString:@"install"]
       ? BabelInstall(base, payload, &error)
       : BabelUninstall(base, &error);
-    if (!ok) fprintf(stderr, "%s\\n", error.localizedDescription.UTF8String);
+    if (!ok) fprintf(stderr, "%s\\n", error.description.UTF8String);
     return ok ? 0 : 1;
   }
 }

@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 
+	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/AllenDang/giu"
 
 	"babel-installer/internal/core"
@@ -24,6 +25,7 @@ var payloadFS embed.FS
 var (
 	discordPath = core.DiscordBaseDir()
 	status      = "安装器已自动填写 Discord 路径。通常无需修改，直接点击「安装」即可。"
+	uiScale     float32
 )
 
 func payloadRoot() fs.FS {
@@ -39,7 +41,7 @@ func runInstall() {
 	if err != nil {
 		status = friendlyActionError("安装", err)
 	} else {
-		status = msg + "\n\n安装成功。接下来只需：\n1. 在系统托盘右键 Discord，选择「退出 Discord」\n2. 重新打开 Discord"
+		status = "安装成功。接下来只需：\n1. 在系统托盘右键 Discord，选择「退出 Discord」\n2. 重新打开 Discord\n\n" + msg
 	}
 	giu.Update()
 }
@@ -84,35 +86,48 @@ var (
 
 func loop() {
 	giu.SingleWindow().Layout(
-		giu.Dummy(0, 8),
-		giu.Label("Babel · Discord 翻译插件"),
-		giu.Dummy(0, 12),
-		giu.Separator(),
-		giu.Dummy(0, 12),
+		giu.Style().SetFontSize(26).To(giu.Label("Babel")),
+		giu.Label("Discord 翻译插件"),
+		giu.Dummy(0, 12*uiScale),
 		giu.Label("Discord 安装目录"),
-		giu.InputText(&discordPath).Hint("可粘贴 Discord 文件夹、app-* 文件夹或 Discord.exe").Size(452),
-		giu.Button("重新检测").OnClick(redetectDiscord).Size(120, 34),
+		giu.Custom(func() {
+			width, _ := giu.GetAvailableRegion()
+			giu.Row(
+				giu.InputText(&discordPath).Hint("Discord 文件夹或 Discord.exe").Size(width-120*uiScale),
+				giu.Button("重新检测").OnClick(redetectDiscord).Size(108*uiScale, 0),
+			).Build()
+		}),
 		giu.Label("支持任意磁盘，安装器不会固定查找 C 盘。").Wrapped(true),
-		giu.Dummy(0, 16),
-		giu.Row(
-			giu.Style().
-				SetColor(giu.StyleColorButton, blurple).
-				SetColor(giu.StyleColorButtonHovered, blurpleHovered).
-				SetColor(giu.StyleColorButtonActive, blurpleActive).
-				To(
-					giu.Button("安装").OnClick(runInstall).Size(190, 46),
-				),
-			giu.Button("卸载").OnClick(runUninstall).Size(190, 46),
-		),
-		giu.Dummy(0, 16),
+		giu.Dummy(0, 8*uiScale),
+		giu.Custom(func() {
+			width, _ := giu.GetAvailableRegion()
+			buttonWidth := (width - 12*uiScale) / 2
+			giu.Row(
+				giu.Style().
+					SetColor(giu.StyleColorButton, blurple).
+					SetColor(giu.StyleColorButtonHovered, blurpleHovered).
+					SetColor(giu.StyleColorButtonActive, blurpleActive).
+					To(giu.Button("安装").OnClick(runInstall).Size(buttonWidth, 44*uiScale)),
+				giu.Button("卸载").OnClick(runUninstall).Size(buttonWidth, 44*uiScale),
+			).Build()
+		}),
+		giu.Dummy(0, 12*uiScale),
 		giu.Separator(),
-		giu.Dummy(0, 10),
-		giu.Label(status).Wrapped(true),
+		giu.Dummy(0, 4*uiScale),
+		giu.Label("操作状态"),
+		giu.Child().ID("result").Size(giu.Auto, giu.Auto).Layout(giu.Label(status).Wrapped(true)),
 	)
 }
 
 func main() {
-	wnd := giu.NewMasterWindow("Babel 安装器", 500, 470, giu.MasterWindowFlagsNotResizable)
+	wnd := giu.NewMasterWindow("Babel 安装器", 600, 500, giu.MasterWindowFlagsNotResizable)
+	uiScale = imgui.CurrentStyle().FontScaleDpi()
+	wnd.SetSize(int(600*uiScale), int(500*uiScale))
+	wnd.SetStyle(giu.DefaultTheme().
+		SetStyle(giu.StyleVarWindowPadding, 24*uiScale, 20*uiScale).
+		SetStyle(giu.StyleVarItemSpacing, 12*uiScale, 8*uiScale).
+		SetStyle(giu.StyleVarFramePadding, 10*uiScale, 9*uiScale).
+		SetStyleFloat(giu.StyleVarFrameRounding, 4*uiScale))
 	// Microsoft YaHei ships with Windows and carries the CJK glyphs ImGui's default
 	// font lacks. giu auto-registers the strings used below, so the needed glyphs
 	// are rasterized; the larger size also makes the UI look cleaner. (giu's font

@@ -7,40 +7,14 @@ const test = require("node:test");
 
 const { __test } = require("../src/mod/renderer");
 
-test("clicking another Discord settings item closes the mod panel and restores Discord content", () => {
-  const previousDocument = global.document;
-  const previousElement = global.Element;
-  const document = new FakeDocument();
-  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
-  sidebar.className = "sidebar__409aa";
-  const otherItem = settingsRow("外观", 420);
-  const modEntry = settingsRow(__test.SETTINGS_LABEL, 462);
-  modEntry.id = __test.SETTINGS_BUTTON_ID;
-  sidebar.append(otherItem, modEntry);
-
-  const panel = new FakeElement("section", "", rect(300, 40, 700, 700));
-  panel.id = "dtm-settings-panel";
-  const discordContent = new FakeElement("div", "Discord original settings", rect(300, 40, 700, 700));
-  discordContent.dataset.dtmHidden = "true";
-  discordContent.dataset.dtmPreviousDisplay = "";
-  discordContent.style.display = "none";
-
-  document.append(sidebar, panel, discordContent);
-
-  try {
-    global.document = document;
-    global.Element = FakeElement;
-    __test.onDocumentClick({ target: otherItem });
-
-    assert.equal(document.getElementById("dtm-settings-panel"), null);
-    assert.equal(discordContent.dataset.dtmHidden, undefined);
-    assert.equal(discordContent.style.display, "");
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
-    if (previousElement) global.Element = previousElement;
-    else delete global.Element;
-  }
+test("automatic translation colors follow the theme without a background and contrast with custom bubbles", () => {
+  const theme = __test.translationPreviewStyle({ background: false, textColor: "auto" }, false);
+  assert.match(theme.color, /var\(--text-default/);
+  assert.equal(theme.backgroundColor, "transparent");
+  assert.equal(__test.translationPreviewStyle({ backgroundColor: "#f2f3f5", textColor: "auto" }).color, "#111827");
+  assert.equal(__test.translationPreviewStyle({ backgroundColor: "#303446", textColor: "auto" }).color, "#f2f3f5");
+  assert.equal(__test.translationPreviewStyle({ background: false, textColor: "#ff0000" }).color, "#ff0000");
+  assert.match(__test.translationPreviewStyle({ backgroundColor: "auto", textColor: "auto" }).backgroundColor, /var\(/);
 });
 
 test("runDomMaintenance skips settings sidebar scans outside Discord settings", () => {
@@ -54,7 +28,7 @@ test("runDomMaintenance skips settings sidebar scans outside Discord settings", 
     global.document = document;
     __test.runDomMaintenance();
 
-    assert.equal(document.getElementById(__test.SETTINGS_BUTTON_ID), null);
+    assert.equal(document.getElementById("dtm-settings-slot-model"), null);
     assert.equal(document.querySelectorAllCalls.includes("nav, [role='navigation'], [role='tablist'], [class*='sidebar'], [class*='side']"), false);
   } finally {
     if (previousDocument) global.document = previousDocument;
@@ -62,320 +36,120 @@ test("runDomMaintenance skips settings sidebar scans outside Discord settings", 
   }
 });
 
-test("ensureSettingsEntry inserts the settings item inside Discord's Experience section", () => {
-  const previousDocument = global.document;
-  const document = new FakeDocument();
-  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
-  sidebar.className = "sidebar__409aa";
-
-  const voice = settingsRow("语音和视频", 420);
-  const appearance = settingsRow("外观", 462);
-  const accessibility = settingsRow("可访问性", 504);
-  const keybinds = settingsRow("快捷键", 546);
-  const language = settingsRow("语言和时间", 588);
-  const activity = settingsRow("动态", 630);
-  const status = settingsRow("当前状态", 672);
-
-  sidebar.append(
-    settingsHeader("体验", 380),
-    voice,
-    appearance,
-    accessibility,
-    keybinds,
-    language,
-    activity,
-    status
-  );
-  document.appendChild(sidebar);
-
+test("settings categories retain native setting rows", () => {
+  const previous = global.document;
+  global.document = new FakeDocument();
   try {
-    global.document = document;
-    __test.ensureSettingsEntry();
-
-    const entry = document.getElementById(__test.SETTINGS_BUTTON_ID);
-    assert.ok(entry);
-    assert.equal(entry.textContent, __test.SETTINGS_LABEL);
-    assert.equal(entry.className, language.className);
-    assert.equal(entry.previousElementSibling, language);
-    assert.equal(entry.nextElementSibling, activity);
-    assert.notEqual(sidebar.children[sidebar.children.length - 1], entry);
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
-  }
+    const field = new FakeElement("div", "field");
+    const section = __test.section("模型", [field], "model");
+    assert.equal(section.id, "dtm-settings-section-model");
+    assert.equal(section.getAttribute("data-direction"), "vertical");
+    assert.equal(section.children[0].dataset.dtmNativeSettingRow, "true");
+    assert.equal(section.contains(field), true);
+  } finally { global.document = previous; }
 });
 
-test("ensureSettingsEntry uses locale-independent Discord section ids", () => {
-  const previousDocument = global.document;
-  const document = new FakeDocument();
-  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
-  sidebar.className = "sidebar__409aa";
-
-  const appearance = settingsRow("外觀", 420, "settings-sidebar___appearance_panel");
-  const language = settingsRow("語言和時間", 462, "settings-sidebar___language_and_time_panel");
-  const activity = settingsRow("活動隱私", 504, "settings-sidebar___activity_privacy");
-  sidebar.append(appearance, language, activity);
-  document.appendChild(sidebar);
-
-  try {
-    global.document = document;
-    __test.ensureSettingsEntry();
-
-    const entry = document.getElementById(__test.SETTINGS_BUTTON_ID);
-    assert.ok(entry);
-    assert.equal(entry.previousElementSibling, language);
-    assert.equal(entry.textContent, __test.SETTINGS_LABEL);
-    assert.equal(entry.getAttribute("data-list-item-id"), "settings-sidebar___babel");
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
+function settingsRuntime(t, api = {}) {
+  const document = readingRuntime(t, { settings: {}, nativeApi: { getSettings: async () => ({}), ...api } });
+  const previousWindow = global.window;
+  const events = [];
+  global.window = new EventTarget();
+  global.window.CustomEvent = CustomEvent;
+  global.window.postMessage = () => {};
+  global.window.setTimeout = () => {};
+  global.window.addEventListener("dtm:unmount-controls", event => events.push(event.detail));
+  for (const key of ["model", "read", "send", "style"]) {
+    const slot = new FakeElement("div");
+    slot.id = `dtm-settings-slot-${key}`;
+    slot.dataset.dtmSectionKey = key;
+    document.appendChild(slot);
   }
+  t.after(() => { __test.closeSettingsPanel(); global.window = previousWindow; });
+  return { document, events };
+}
+
+test("native settings slots share one form and dispose callbacks when the panel closes", async t => {
+  const { document, events } = settingsRuntime(t);
+  await __test.openSettingsPanel();
+  for (const key of ["model", "read", "send", "style"]) {
+    const slot = document.getElementById(`dtm-settings-slot-${key}`);
+    assert.equal(slot.children.length, 1);
+    assert.equal(slot.children[0].id, `dtm-settings-section-${key}`);
+  }
+  await __test.openSettingsPanel();
+  assert.equal(document.getElementById("dtm-settings-slot-model").children.length, 1);
+  let changes = 0;
+  const field = __test.toggleRow("Test", false, () => { changes++; });
+  document.getElementById("dtm-settings-section-read").appendChild(field);
+  const change = () => global.window.dispatchEvent(new CustomEvent("dtm:control-change", { detail: { id: field.dataset.dtmControlId, value: true } }));
+  change();
+  assert.equal(changes, 1);
+  __test.closeSettingsPanel();
+  change();
+  assert.equal(changes, 1);
+  assert.equal(field.dataset.dtmNativeReactMounted, "disposed");
+  assert.ok(events.flatMap(event => event.ids).includes(field.dataset.dtmControlId));
 });
 
-test("settings subnav stays hidden as a sibling until the mod settings entry is active", () => {
-  const previousDocument = global.document;
-  const previousElement = global.Element;
-  const document = new FakeDocument();
-  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
-  sidebar.className = "sidebar__409aa";
-
-  const appearance = settingsRow("外观", 420);
-  const language = settingsRow("语言和时间", 462);
-  const nativeSubnav = settingsSubnavTemplate("原生二级菜单", 504);
-  const activity = settingsRow("动态", 630);
-
-  sidebar.append(settingsHeader("体验", 380), appearance, language, nativeSubnav, activity);
-  document.appendChild(sidebar);
-
-  try {
-    global.document = document;
-    global.Element = FakeElement;
-    __test.ensureSettingsEntry();
-
-    const entry = document.getElementById(__test.SETTINGS_BUTTON_ID);
-    const subnav = entry.nextElementSibling;
-
-    assert.ok(subnav);
-    assert.equal(subnav.dataset.dtmSettingsSubnav, "true");
-    assert.equal(entry.children.includes(subnav), false);
-    assert.equal(subnav.hidden, true);
-    assert.equal(subnav.getAttribute("aria-hidden"), "true");
-    assert.equal(entry.getAttribute("aria-expanded"), "false");
-
-    const list = subnav.querySelector("[data-dtm-settings-subnav-list='true']");
-    assert.ok(list);
-    assert.equal(list.getAttribute("role"), "list");
-    const thumb = list.children.find(item => String(item.className).includes("thumbAnchor"));
-    const track = list.children.find(item => String(item.className).includes("track"));
-    const trackThumb = track.querySelector("[class*='thumb']");
-    const menuItems = list.children.filter(item => item.dataset.dtmSubnavTarget);
-    assert.ok(thumb);
-    assert.ok(trackThumb);
-    assert.deepEqual(menuItems.map(item => item.dataset.dtmSubnavTarget), ["model", "read", "send", "style"]);
-    assert.deepEqual(menuItems.map(item => item.textContent), ["模型", "消息翻译", "发送翻译", "译文外观"]);
-    assert.equal(track.style.gridRow, "1 / span 4");
-    assert.equal(track.style.height, "128px");
-    assert.equal(subnav.textContent.includes("原生二级菜单"), false);
-    assert.equal(subnav.textContent.includes("密码和安全中心"), false);
-    assert.ok(menuItems.every(item => item.getAttribute("role") === "listitem"));
-    assert.ok(menuItems.every(item => item.children.length > 0));
-    assert.ok(menuItems.every(item => item.getBoundingClientRect().height >= 18));
-    assert.ok(menuItems[1].getBoundingClientRect().y - menuItems[0].getBoundingClientRect().y >= 30);
-    assert.ok(menuItems.every(item => !item.querySelector("[class*='icon']")));
-    assert.ok(menuItems[0].querySelector("[class*='item']"));
-    assert.equal(menuItems[0].querySelector("[class*='item']").getAttribute("role"), "button");
-    assert.ok(menuItems[0].querySelector("[class*='active']"));
-    assert.equal(menuItems[0].querySelector("[class*='item']").getAttribute("aria-current"), "page");
-    assert.equal(menuItems[1].querySelector("[class*='active']"), null);
-    assert.equal(thumb.style.gridRow, "1");
-    assert.equal(trackThumb.style.transform, "none");
-
-    __test.markSettingsEntryActive(entry);
-    assert.equal(subnav.hidden, false);
-    assert.equal(subnav.getAttribute("aria-hidden"), null);
-    assert.equal(entry.getAttribute("aria-expanded"), "true");
-
-    const panel = new FakeElement("section");
-    panel.id = __test.SETTINGS_PANEL_ID;
-    const styleSection = new FakeElement("section");
-    styleSection.id = "dtm-settings-section-style";
-    document.append(panel, styleSection);
-    __test.onDocumentClick({ target: menuItems[3] });
-    assert.equal(document.getElementById(__test.SETTINGS_PANEL_ID), panel);
-    menuItems[3].listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
-    // Clicking moves the indicator straight to the target (no scroll-spy stutter).
-    assert.equal(menuItems[0].querySelector("[class*='active']"), null);
-    assert.ok(menuItems[3].querySelector("[class*='active']"));
-    assert.equal(thumb.style.gridRow, "4");
-    assert.equal(trackThumb.style.transform, "translate3d(0px, 108px, 0px)");
-    assert.equal(styleSection.scrollIntoViewOptions.behavior, "smooth");
-    panel.remove();
-    styleSection.remove();
-
-    __test.clearSettingsEntryActive();
-    assert.equal(subnav.hidden, true);
-    assert.equal(subnav.getAttribute("aria-hidden"), "true");
-    assert.equal(entry.getAttribute("aria-expanded"), "false");
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
-    if (previousElement) global.Element = previousElement;
-    else delete global.Element;
-  }
+test("closing native settings while preferences load does not mount a stale form", async t => {
+  const request = deferredTranslation();
+  const { document } = settingsRuntime(t, { getSettings: () => request.promise });
+  const opening = __test.openSettingsPanel();
+  __test.closeSettingsPanel();
+  request.resolve({});
+  await opening;
+  assert.equal(document.getElementById("dtm-settings-slot-model").children.length, 0);
 });
 
-test("settings subnav indicator follows the visible settings section while scrolling", () => {
-  const previousDocument = global.document;
-  const previousElement = global.Element;
-  const document = new FakeDocument();
-  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
-  sidebar.className = "sidebar__409aa";
-
-  const appearance = settingsRow("外观", 420);
-  const language = settingsRow("语言和时间", 462);
-  const nativeSubnav = settingsSubnavTemplate("原生二级菜单", 504);
-  const activity = settingsRow("动态", 630);
-  sidebar.append(settingsHeader("体验", 380), appearance, language, nativeSubnav, activity);
-
-  const panel = new FakeElement("section", "", rect(280, 80, 760, 700));
-  panel.id = __test.SETTINGS_PANEL_ID;
-  const model = new FakeElement("section", "", rect(280, -120, 760, 220));
-  model.id = "dtm-settings-section-model";
-  const read = new FakeElement("section", "", rect(280, 80, 760, 120));
-  read.id = "dtm-settings-section-read";
-  const send = new FakeElement("section", "", rect(280, 220, 760, 120));
-  send.id = "dtm-settings-section-send";
-  const style = new FakeElement("section", "", rect(280, 260, 760, 220));
-  style.id = "dtm-settings-section-style";
-  panel.append(model, read, send, style);
-  document.append(sidebar, panel);
-
-  try {
-    global.document = document;
-    global.Element = FakeElement;
-    __test.ensureSettingsEntry();
-
-    const entry = document.getElementById(__test.SETTINGS_BUTTON_ID);
-    __test.markSettingsEntryActive(entry);
-    const subnav = entry.nextElementSibling;
-    const list = subnav.querySelector("[data-dtm-settings-subnav-list='true']");
-    const thumb = list.children.find(item => String(item.className).includes("thumbAnchor"));
-    const track = list.children.find(item => String(item.className).includes("track"));
-    const trackThumb = track.querySelector("[class*='thumb']");
-    const menuItems = list.children.filter(item => item.dataset.dtmSubnavTarget);
-
-    __test.syncSettingsSubnavToScroll(panel);
-    assert.ok(menuItems[1].querySelector("[class*='active']"));
-    assert.equal(thumb.style.gridRow, "2");
-    assert.equal(trackThumb.style.transform, "translate3d(0px, 36px, 0px)");
-
-    send.box.y = 90;
-    style.box.y = 100;
-    __test.syncSettingsSubnavToScroll(panel);
-    assert.equal(menuItems[1].querySelector("[class*='active']"), null);
-    assert.ok(menuItems[3].querySelector("[class*='active']"));
-    assert.equal(thumb.style.gridRow, "4");
-    assert.equal(trackThumb.style.transform, "translate3d(0px, 108px, 0px)");
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
-    if (previousElement) global.Element = previousElement;
-    else delete global.Element;
-  }
+test("replacing a provider field disposes only its old native control", t => {
+  const { events } = settingsRuntime(t);
+  let changes = 0;
+  const container = new FakeElement("div");
+  const old = __test.languageSelectField("Language", "英语", () => { changes++; });
+  container.appendChild(old);
+  __test.clearChildren(container);
+  global.window.dispatchEvent(new CustomEvent("dtm:control-change", { detail: { id: old.dataset.dtmControlId, value: "日语" } }));
+  assert.equal(changes, 0);
+  assert.equal(old.dataset.dtmNativeReactMounted, "disposed");
+  assert.deepEqual(events.at(-1).ids, [old.dataset.dtmControlId]);
 });
 
-test("mountSettingsPanel keeps Discord settings chrome and replaces only the scroll body content", () => {
-  const previousDocument = global.document;
-  const document = new FakeDocument();
-
-  const root = new FakeElement("div", "", rect(0, 0, 1200, 800));
-  root.className = "standardSidebarView";
-  const sidebar = new FakeElement("aside", "", rect(0, 0, 260, 800));
-  sidebar.className = "sidebar__409aa";
-  sidebar.append(settingsRow("外观", 300), settingsRow("语言和时间", 340));
-
-  const content = new FakeElement("div", "", rect(260, 0, 940, 800));
-  content.className = "content_e9e3ed";
-  const header = new FakeElement("div", "", rect(260, 0, 940, 50));
-  header.className = "contentHeader_e9e3ed";
-  const title = new FakeElement("div", "账户", rect(280, 12, 80, 24));
-  title.className = "contentTitle_e9e3ed";
-  const close = new FakeElement("button", "", rect(1160, 8, 32, 32));
-  close.setAttribute("aria-label", "关闭");
-  header.append(title, close);
-
-  const body = new FakeElement("div", "", rect(260, 50, 940, 750));
-  body.className = "contentBody_e9e3ed";
-  const scroller = new FakeElement("div", "", rect(260, 50, 940, 750));
-  scroller.className = "scroller__6131a auto_d125d2 scrollerBase_d125d2";
-  const nativePanel = new FakeElement("div", "Discord native settings", rect(360, 100, 720, 640));
-  nativePanel.className = "panel__6131a";
-  scroller.appendChild(nativePanel);
-  body.appendChild(scroller);
-  content.append(header, body);
-  root.append(sidebar, content);
-  document.appendChild(root);
-
-  const panel = new FakeElement("section", "", rect(360, 100, 720, 900));
-  panel.id = __test.SETTINGS_PANEL_ID;
-
-  try {
-    global.document = document;
-    __test.mountSettingsPanel(panel);
-
-    assert.equal(panel.parentElement, scroller);
-    assert.equal(header.dataset.dtmHidden, undefined);
-    assert.equal(body.dataset.dtmHidden, undefined);
-    assert.equal(scroller.dataset.dtmHidden, undefined);
-    assert.equal(nativePanel.dataset.dtmHidden, "true");
-    assert.equal(nativePanel.style.display, "none");
-    assert.equal(title.textContent, __test.SETTINGS_LABEL);
-
-    __test.restoreSettingsContent();
-    assert.equal(title.textContent, "账户");
-    assert.equal(nativePanel.dataset.dtmHidden, undefined);
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
-  }
+test("a model refresh cannot replace another provider selected while the request is pending", async t => {
+  const pending = deferredTranslation();
+  const { document } = settingsRuntime(t, { listModels: () => pending.promise });
+  await __test.openSettingsPanel();
+  const control = name => walk(document).find(node => node.__dtmControlSpec?.name === name);
+  const refresh = walk(document).find(node => node.__dtmControlSpec?.label === "刷新模型");
+  refresh.listeners.get("click")();
+  control("AI 平台").__dtmControlSpec.onChange("deepseek");
+  const model = control("匹配模型").__dtmControlSpec.value;
+  pending.resolve({ models: [{ value: "unrelated-model", label: "Unrelated model" }] });
+  await flushMicrotasks();
+  assert.equal(control("匹配模型").__dtmControlSpec.value, model);
 });
 
-test("settings sections reuse Discord account page row structure", () => {
-  const previousDocument = global.document;
-  const document = new FakeDocument();
-
-  try {
-    global.document = document;
-
-    const first = document.createElement("div");
-    first.textContent = "AI 平台";
-    const second = document.createElement("div");
-    second.textContent = "匹配模型";
-    const section = __test.section("模型", [first, second]);
-
-    assert.equal(section.className, "container__75920");
-    assert.equal(section.children[0].className, "stack_dbd263");
-    assert.equal(section.children[0].getAttribute("data-direction"), "horizontal");
-    assert.equal(section.children[0].getAttribute("style"), "gap: var(--space-24); padding-bottom: var(--space-lg);");
-    assert.equal(section.children[0].children[0].className, "stack_dbd263");
-    assert.equal(section.children[0].children[0].getAttribute("data-direction"), "vertical");
-    assert.equal(section.children[0].children[0].getAttribute("style"), "gap: var(--space-4); padding: var(--space-0);");
-    assert.equal(section.children[0].children[0].children[0].tagName, "H2");
-    assert.equal(section.children[0].children[0].children[0].className, "heading-xl/normal_cf4812 defaultColor__5345c");
-    assert.equal(section.children[1].className, "stack_dbd263");
-    assert.equal(section.children[1].getAttribute("data-direction"), "vertical");
-    assert.equal(section.children[1].getAttribute("style"), "gap: var(--space-xs); padding: var(--space-0);");
-    assert.equal(section.children[1].children.length, 2);
-    assert.equal(section.children[1].children[0].className, "container__75920");
-    assert.equal(section.children[1].children[0].children[0].className, "stack_dbd263 baseSettingWrapper__32428");
-    assert.equal(section.children[1].children[0].children[0].getAttribute("data-direction"), "vertical");
-    assert.equal(section.children[1].children[0].children[0].getAttribute("style"), "gap: var(--space-0); padding-top: var(--space-xs); padding-bottom: var(--space-xs);");
-    assert.equal(section.children[1].children[0].children[0].children[0], first);
-    assert.equal(section.children[2].className, "divider__1de9c divider__6131a");
-  } finally {
-    if (previousDocument) global.document = previousDocument;
-    else delete global.document;
-  }
+test("saving captures preferences and API key together without discarding later edits", async t => {
+  const pending = deferredTranslation();
+  const saved = [];
+  const keys = [];
+  const { document } = settingsRuntime(t, {
+    setApiKey: request => { keys.push(request); return pending.promise; },
+    saveSettings: async preferences => { saved.push(preferences); return preferences; }
+  });
+  await __test.openSettingsPanel();
+  const control = name => walk(document).find(node => node.__dtmControlSpec?.name === name);
+  const save = walk(document).find(node => node.__dtmControlSpec?.label === "保存");
+  control("API Key").__dtmControlSpec.onChange("test-only-original");
+  const saving = save.listeners.get("click")();
+  control("AI 平台").__dtmControlSpec.onChange("deepseek");
+  control("API Key").__dtmControlSpec.onChange("test-only-new");
+  const apiControl = control("API Key");
+  pending.resolve({ ok: true });
+  await saving;
+  assert.equal(saved[0].model.provider, keys[0].provider);
+  assert.equal(keys[0].apiKey, "test-only-original");
+  assert.equal(Object.hasOwn(saved[0], "__apiKey"), false);
+  assert.equal(control("API Key"), apiControl);
 });
 
 test("languageSelectField renders a Discord React select host and keeps unknown custom language values", () => {
@@ -715,7 +489,8 @@ test("settings source sends action feedback through panel-scoped toasts", () => 
   assert.equal(source.includes("actionField(\"模型列表\""), false);
   assert.equal(source.includes("dtmActionStatus"), false);
   assert.equal(source.includes("text-overflow: ellipsis"), false);
-  assert.equal(source.includes("overflow-wrap: anywhere"), false);
+  const settingsSource = source.slice(source.indexOf("async function openSettingsPanel"), source.indexOf("function onMessageDoubleClick"));
+  assert.equal(settingsSource.includes("overflow-wrap: anywhere"), false);
   assert.equal(source.includes("status.textContent = `连接成功"), false);
   assert.equal(source.includes("使用当前表单配置发起一次测试请求"), false);
 });
@@ -837,47 +612,13 @@ test("settings source lays feature toggles out as regular Discord setting rows",
   assert.ok(source.includes("toggleRow(\"启用发送翻译输入框\""));
   assert.ok(source.includes("kind: \"switch\""));
   assert.equal(source.includes("findWebpackComponentAny"), false);
-  assert.ok(preloadSource.includes("findComponentAny"));
-  assert.ok(preloadSource.includes("\"switchIndicator\", \"thumb\", \"data-mana-component\""));
+  assert.ok(preloadSource.includes('findComponent(require, ["switchIconsEnabled", "hasIcon"])'));
+  assert.ok(preloadSource.includes('h(ui.Switch, { label: detail.name || "", checked: value'));
   assert.equal(source.includes("DISCORD_SWITCH_COLORS"), false);
   assert.equal(source.includes("syncNativeSwitchColors"), false);
   assert.equal(source.includes("bindNativeSwitchColorSync"), false);
   assert.equal(source.includes("pointerleave"), false);
   assert.equal(source.includes("checked: value,\n        value,"), false);
-});
-
-test("settings source uses Discord account page containers instead of plugin wrappers", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../src/mod/renderer.js"), "utf8");
-
-  assert.ok(source.includes("accountPanel: \"panel__6131a\""));
-  assert.ok(source.includes("accountCategories: \"categories__6131a\""));
-  assert.ok(source.includes("DISCORD_STACK_LAYOUTS"));
-  assert.ok(source.includes("data-direction"));
-  assert.ok(source.includes("panel.className = DISCORD_UI.accountPanel"));
-  assert.ok(source.includes("const body = div(DISCORD_UI.accountCategories)"));
-  assert.ok(source.includes("divider: \"divider__1de9c divider__6131a\""));
-  assert.ok(source.includes("SETTINGS_SECTION_NAV"));
-  assert.ok(source.includes("ensureSettingsSubnav"));
-  assert.ok(source.includes("scrollToSettingsSection"));
-  assert.equal(source.includes("dtm-panel-body"), false);
-  assert.equal(source.includes("dtm-provider-select-field"), false);
-  assert.equal(source.includes("dtm-provider-fields"), false);
-  assert.equal(source.includes("dtm-model-field"), false);
-  assert.equal(source.includes("dtm-settings-page"), false);
-  assert.equal(source.includes("dtm-settings-floating"), false);
-  assert.equal(source.includes("section(\"功能\""), false);
-  assert.equal(source.includes("section(\"操作\""), false);
-  assert.equal(source.includes("保存设置"), false);
-});
-
-test("settings source delegates subnav thumb movement to Discord main-world spring", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../src/mod/renderer.js"), "utf8");
-
-  assert.ok(source.includes("function requestMainWorldSubnavThumbSync"));
-  assert.ok(source.includes("window.dispatchEvent(new window.CustomEvent(type"));
-  assert.ok(source.includes('sendMainWorldMessage("dtm:sync-subnav-thumb", detail)'));
-  assert.ok(source.includes("if (requestMainWorldSubnavThumbSync(trackThumb)) return;"));
-  assert.equal(source.includes("transitionDuration"), false);
 });
 
 test("settings source shows translation style controls directly without advanced disclosure", () => {
@@ -1079,16 +820,13 @@ test("UI polish fixes are wired at their key nodes", () => {
   assert.ok(source.includes("dismissedTranslations.delete(getMessageId(message))"));
   assert.ok(source.includes("if (!translatedMessages.has(id) || dismissedTranslations.has(id)) continue;"));
 
-  // Save shows a transient checkmark on the button, with no toast or spinner.
+  // Save confirms inline without a spinner.
   assert.ok(source.includes("host.flashLabel"));
   assert.ok(source.includes("save.flashLabel(\"已保存\")"));
   assert.equal(source.includes("save.setLoading"), false);
 
-  // Settings panel hides native content before revealing ours (no open flicker).
-  assert.ok(source.includes("hideSettingsContentSiblings(mount, panel);\n    mount.prepend(panel);"));
-
   // Translation preview is a padded rounded box, not a thin strip.
-  assert.ok(preloadSource.includes('"9px 13px"'));
+  assert.ok(source.includes("padding: 9px 13px;"));
 });
 
 test("translation cache hit reuses the previous AI result", async () => {
@@ -1326,71 +1064,6 @@ test("settings page source does not contain hand rolled select, switch animation
   assert.equal(source.includes("mount.parentElement.insertBefore(box, mount)"), false);
 });
 
-function settingsHeader(text, y) {
-  const node = new FakeElement("div", text, rect(20, y, 220, 24));
-  node.className = "header__409aa";
-  return node;
-}
-
-function settingsRow(text, y, listItemId = "") {
-  const row = new FakeElement("div", "", rect(20, y, 220, 34));
-  row.className = "item__409aa nativeItem__409aa";
-  row.setAttribute("role", "button");
-  if (listItemId) {
-    row.setAttribute("data-list-item-id", listItemId);
-    row.dataset.listItemId = listItemId;
-  }
-
-  const icon = new FakeElement("span", "", rect(28, y + 7, 20, 20));
-  icon.className = "icon__409aa";
-
-  const label = new FakeElement("div", text, rect(60, y + 6, 160, 22));
-  label.className = "label__409aa";
-
-  row.append(icon, label);
-  return row;
-}
-
-function settingsSubnavTemplate(text, y) {
-  const subnav = new FakeElement("div", "", rect(20, y, 220, 144));
-  subnav.className = "subnavContainer__409aa";
-
-  const list = new FakeElement("div", "", rect(37, y, 203, 144));
-  list.className = "subnav__409aa";
-  list.setAttribute("role", "list");
-  const track = new FakeElement("div", "", rect(37, y + 8, 2, 128));
-  track.className = "track__409aa";
-  const trackThumb = new FakeElement("div", "", rect(37, y + 8, 2, 20));
-  trackThumb.className = "thumb__409aa";
-  track.appendChild(trackThumb);
-  const thumb = new FakeElement("div", "", rect(37, y + 8, 2, 20));
-  thumb.className = "thumbAnchor__409aa";
-  list.append(
-    track,
-    thumb,
-    settingsSubnavItem(text, y, true),
-    settingsSubnavItem("密码和安全中心", y + 36),
-    settingsSubnavItem("账户信誉", y + 72),
-    settingsSubnavItem("家庭中心", y + 108)
-  );
-
-  subnav.appendChild(list);
-  return subnav;
-}
-
-function settingsSubnavItem(text, y, selected = false) {
-  const row = new FakeElement("div", "", rect(56, y + 8, 184, 20));
-  row.setAttribute("role", "listitem");
-
-  const label = new FakeElement("div", text, rect(56, y + 8, 184, 20));
-  label.className = selected ? "item__409aa active__409aa" : "item__409aa";
-  label.setAttribute("role", "link");
-  if (selected) label.setAttribute("aria-current", "page");
-
-  row.appendChild(label);
-  return row;
-}
-
 function rect(x, y, width, height) {
   return { x, y, width, height };
 }
@@ -1414,6 +1087,10 @@ class FakeDocument {
 
   createElement(tagName) {
     return new FakeElement(tagName);
+  }
+
+  createTextNode(text) {
+    return new FakeElement("#text", text);
   }
 
   createElementNS(_namespace, tagName) {
@@ -1467,6 +1144,16 @@ class FakeElement {
     if (this.children.length === 0) return this.ownTextContent;
     return this.children.map(child => child.textContent).join("");
   }
+
+  get lastElementChild() { return this.children.at(-1) || null; }
+
+  get isConnected() {
+    let node = this;
+    while (node.parentElement) node = node.parentElement;
+    return node instanceof FakeDocument;
+  }
+
+  focus() { global.document.activeElement = this; }
 
   set textContent(value) {
     this.children = [];
@@ -1631,6 +1318,8 @@ function matchesSimple(node, selector) {
   }
   if (selector === "[id]") return Boolean(node.id);
   if (selector === "[tabindex]") return node.attributes.has("tabindex");
+  if (selector === "[data-dtm-control-id]") return Boolean(node.dataset.dtmControlId);
+  if (selector === "[data-dtm-section-key]") return Boolean(node.dataset.dtmSectionKey);
   if (selector === "[data-dtm-hidden='true']") return node.dataset.dtmHidden === "true";
   if (selector === "[data-dtm-header-title='true']") return node.dataset.dtmHeaderTitle === "true";
 
@@ -1671,12 +1360,23 @@ function chatMessage(channelId, snowflake, text, contentClass = "messageContent_
   return message;
 }
 
-test("auto-translate only touches messages newer than the moment it was enabled", async () => {
+function snowflakeAt(timestamp, increment = 0) {
+  return (((BigInt(timestamp) - 1420070400000n) << 22n) | BigInt(increment)).toString();
+}
+
+function autoTranslateClock(t) {
+  const clock = { now: Date.UTC(2026, 8, 5, 12) };
+  t.mock.method(Date, "now", () => clock.now);
+  return clock;
+}
+
+test("auto-translate only touches messages newer than the moment it was enabled", async t => {
+  const clock = autoTranslateClock(t);
   const previousDocument = global.document;
   const previousElement = global.Element;
   const document = new FakeDocument();
   // An existing message present when auto-translate is switched on (the baseline).
-  const existing = chatMessage("100", "5000000000000000000", "Old message");
+  const existing = chatMessage("100", snowflakeAt(clock.now - 1000), "Old message");
   document.appendChild(existing);
 
   let requests = 0;
@@ -1705,7 +1405,8 @@ test("auto-translate only touches messages newer than the moment it was enabled"
     assert.equal(existing.querySelectorAll(".dtm-translation-block").length, 0);
 
     // A genuinely new message arrives (higher snowflake) in this channel.
-    const fresh = chatMessage("100", "6000000000000000000", "Hi there");
+    clock.now += 1000;
+    const fresh = chatMessage("100", snowflakeAt(clock.now), "Hi there");
     document.appendChild(fresh);
     __test.runAutoTranslate();
     await flushMicrotasks();
@@ -1722,11 +1423,12 @@ test("auto-translate only touches messages newer than the moment it was enabled"
   }
 });
 
-test("auto-translate skips a message already written in the target language", async () => {
+test("auto-translate skips a message already written in the target language", async t => {
+  const clock = autoTranslateClock(t);
   const previousDocument = global.document;
   const previousElement = global.Element;
   const document = new FakeDocument();
-  const baseline = chatMessage("200", "5000000000000000000", "baseline");
+  const baseline = chatMessage("200", snowflakeAt(clock.now - 1000), "baseline");
   document.appendChild(baseline);
 
   let requests = 0;
@@ -1751,7 +1453,8 @@ test("auto-translate skips a message already written in the target language", as
 
     // Pin the baseline, then a new Chinese message arrives.
     __test.runAutoTranslate();
-    const chineseMessage = chatMessage("200", "6000000000000000000", "你好，今天过得怎么样？");
+    clock.now += 1000;
+    const chineseMessage = chatMessage("200", snowflakeAt(clock.now), "你好，今天过得怎么样？");
     document.appendChild(chineseMessage);
     __test.runAutoTranslate();
     await flushMicrotasks();
@@ -1767,11 +1470,12 @@ test("auto-translate skips a message already written in the target language", as
   }
 });
 
-test("auto-translate stays off when the global setting is disabled", async () => {
+test("auto-translate stays off when the global setting is disabled", async t => {
+  const clock = autoTranslateClock(t);
   const previousDocument = global.document;
   const previousElement = global.Element;
   const document = new FakeDocument();
-  document.appendChild(chatMessage("abc", "5000000000000000000", "baseline"));
+  document.appendChild(chatMessage("abc", snowflakeAt(clock.now - 1000), "baseline"));
 
   let requests = 0;
   try {
@@ -1789,7 +1493,8 @@ test("auto-translate stays off when the global setting is disabled", async () =>
     });
 
     // Even a brand-new message is ignored while the global setting is off.
-    const fresh = chatMessage("abc", "6000000000000000000", "Hi there");
+    clock.now += 1000;
+    const fresh = chatMessage("abc", snowflakeAt(clock.now), "Hi there");
     document.appendChild(fresh);
     __test.runAutoTranslate();
     __test.runAutoTranslate();
@@ -1806,14 +1511,16 @@ test("auto-translate stays off when the global setting is disabled", async () =>
   }
 });
 
-test("snowflake comparison orders by length then lexicographically", () => {
-  assert.equal(__test.snowflakeGreater("6000000000000000000", "5000000000000000000"), true);
-  assert.equal(__test.snowflakeGreater("100000000000000000000", "999999999999999999"), true);
-  assert.equal(__test.snowflakeGreater("5000000000000000000", "5000000000000000000"), false);
-  assert.equal(__test.snowflakeGreater("", "5000000000000000000"), false);
+test("snowflake timestamps use the Discord epoch and ignore worker and sequence bits", () => {
+  const timestamp = Date.UTC(2026, 8, 5, 12);
+  assert.equal(__test.snowflakeTimestamp(snowflakeAt(timestamp)), timestamp);
+  assert.equal(__test.snowflakeTimestamp(snowflakeAt(timestamp, 0x3fffff)), timestamp);
+  assert.equal(__test.snowflakeTimestamp(snowflakeAt(timestamp + 1)), timestamp + 1);
+  assert.equal(__test.snowflakeTimestamp(""), 0);
 });
 
-test("auto-translate never translates the backlog when messages render after it is enabled", async () => {
+test("auto-translate never translates the backlog when messages render after it is enabled", async t => {
+  const clock = autoTranslateClock(t);
   const previousDocument = global.document;
   const previousElement = global.Element;
   const document = new FakeDocument();
@@ -1838,9 +1545,9 @@ test("auto-translate never translates the backlog when messages render after it 
     __test.runAutoTranslate();
     await flushMicrotasks();
 
-    // The backlog now renders. It must be treated as the baseline, not translated.
-    const backlogA = chatMessage("300", "5000000000000000000", "backlog one");
-    const backlogB = chatMessage("300", "5000000000000000001", "backlog two");
+    // The backlog now renders. Both messages predate enabling auto-translate.
+    const backlogA = chatMessage("300", snowflakeAt(clock.now - 2000), "backlog one");
+    const backlogB = chatMessage("300", snowflakeAt(clock.now - 1000), "backlog two");
     document.appendChild(backlogA);
     document.appendChild(backlogB);
     __test.runAutoTranslate();
@@ -1850,7 +1557,8 @@ test("auto-translate never translates the backlog when messages render after it 
     assert.equal(backlogB.querySelectorAll(".dtm-translation-block").length, 0);
 
     // Only a genuinely newer message gets translated.
-    const fresh = chatMessage("300", "6000000000000000000", "fresh hi");
+    clock.now += 1000;
+    const fresh = chatMessage("300", snowflakeAt(clock.now), "fresh hi");
     document.appendChild(fresh);
     __test.runAutoTranslate();
     await flushMicrotasks();
@@ -1915,11 +1623,12 @@ function waitMs(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-test("auto-translate caps concurrent model calls via the queue", async () => {
+test("auto-translate caps concurrent model calls via the queue", async t => {
+  const clock = autoTranslateClock(t);
   const previousDocument = global.document;
   const previousElement = global.Element;
   const document = new FakeDocument();
-  document.appendChild(chatMessage("q", "5000000000000000000", "baseline"));
+  document.appendChild(chatMessage("q", snowflakeAt(clock.now - 1000), "baseline"));
 
   let active = 0;
   let peak = 0;
@@ -1946,8 +1655,9 @@ test("auto-translate caps concurrent model calls via the queue", async () => {
     });
 
     __test.runAutoTranslate();            // pins the baseline
+    clock.now += 1000;
     for (let i = 0; i < 6; i += 1) {
-      document.appendChild(chatMessage("q", "600000000000000000" + i, "msg" + i));
+      document.appendChild(chatMessage("q", snowflakeAt(clock.now, i), "msg" + i));
     }
     __test.runAutoTranslate();            // enqueues all six
     await waitMs(120);
@@ -2072,3 +1782,474 @@ test("pre-translating the quoted original still lets a later double-click transl
     else delete global.Element;
   }
 });
+
+function readingRuntime(t, runtime) {
+  const previousDocument = global.document;
+  const previousElement = global.Element;
+  const document = new FakeDocument();
+  global.document = document;
+  global.Element = FakeElement;
+  __test.setRuntimeForTests(runtime);
+  t.after(() => {
+    __test.resetRuntimeForTests();
+    if (previousDocument) global.document = previousDocument;
+    else delete global.document;
+    if (previousElement) global.Element = previousElement;
+    else delete global.Element;
+  });
+  return document;
+}
+
+function deferredTranslation() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function sendingRuntime(t, api = {}, autoSend = false) {
+  const document = readingRuntime(t, {
+    settings: { sendTranslation: { enabled: true, enterToSend: autoSend } },
+    nativeApi: { beginSend: async () => 1, cancelSend: async () => {}, insertAndSend: async () => ({ ok: true, sent: autoSend }), ...api }
+  });
+  const previousWindow = global.window;
+  const previousLocation = global.location;
+  global.window = { location: { pathname: "/channels/1/2" }, innerWidth: 1200, innerHeight: 800, addEventListener() {} };
+  global.location = global.window.location;
+  t.after(() => { global.window = previousWindow; global.location = previousLocation; });
+  const mount = new FakeElement("div", "", rect(300, 650, 600, 60));
+  mount.className = "channelTextArea__test";
+  const editor = new FakeElement("div");
+  editor.setAttribute("role", "textbox");
+  editor.setAttribute("contenteditable", "true");
+  mount.appendChild(editor);
+  document.appendChild(mount);
+  __test.ensureSendBox();
+  const box = document.getElementById("dtm-send-box");
+  const input = box.querySelector("input");
+  input.value = "Original text";
+  const keydown = options => input.listeners.get("keydown")({ key: "Enter", preventDefault() {}, stopPropagation() {}, ...options });
+  return { document, box, input, editor, keydown };
+}
+
+test("send box maintenance leaves an unchanged hint and transient errors alone", t => {
+  const { box } = sendingRuntime(t);
+  const status = box.querySelector("span");
+  let writes = 0;
+  let text = status.textContent;
+  Object.defineProperty(status, "textContent", { get: () => text, set: value => { text = value; writes++; } });
+  for (let i = 0; i < 10; i++) __test.ensureSendBox();
+  assert.equal(writes, 0);
+  status.textContent = "Test error";
+  __test.ensureSendBox();
+  assert.equal(status.textContent, "Test error");
+  assert.equal(writes, 1);
+});
+
+test("IME confirmation and repeated Enter do not start send translations", async t => {
+  let calls = 0;
+  const { keydown, input } = sendingRuntime(t, { translate: async () => { calls++; return { text: "T" }; } });
+  await keydown({ isComposing: true });
+  await keydown({ keyCode: 229 });
+  input.readOnly = true;
+  await keydown({});
+  assert.equal(calls, 0);
+});
+
+test("send input consumes Enter before yielding and remains focusable while translating", async t => {
+  const pending = deferredTranslation();
+  let calls = 0;
+  const { input, keydown } = sendingRuntime(t, { translate: () => { calls++; return pending.promise; } });
+  let stopped = false;
+  const sending = keydown({ stopPropagation() { stopped = true; } });
+  assert.equal(stopped, true);
+  assert.equal(input.readOnly, true);
+  assert.notEqual(input.disabled, true);
+  await keydown({});
+  await flushMicrotasks();
+  assert.equal(calls, 1);
+  pending.resolve({ text: "Translation" });
+  await sending;
+  assert.equal(input.readOnly, false);
+});
+
+test("rejected or composing Enter never reaches Discord's global send shortcut", async t => {
+  const { keydown, input } = sendingRuntime(t, { beginSend: async () => { throw new Error("已有草稿"); } });
+  for (const options of [{}, { isComposing: true }, { keyCode: 229 }, { shiftKey: true }]) {
+    let stopped = false;
+    await keydown({ ...options, stopPropagation() { stopped = true; } });
+    assert.equal(stopped, true);
+    assert.equal(input.value, "Original text");
+  }
+  assert.equal(input.readOnly, false);
+});
+
+test("changing channels during a send translation preserves source and never inserts", async t => {
+  const pending = deferredTranslation();
+  let inserted = 0;
+  const { keydown, input, document } = sendingRuntime(t, {
+    translate: () => pending.promise,
+    insertAndSend: async () => { inserted++; return { ok: true }; }
+  });
+  const sending = keydown({});
+  await flushMicrotasks();
+  global.window.location.pathname = "/channels/1/3";
+  pending.resolve({ text: "Translation" });
+  await sending;
+  assert.equal(inserted, 0);
+  assert.equal(input.value, "Original text");
+  assert.notEqual(document.activeElement, input);
+  assert.equal(input.readOnly, false);
+});
+
+test("failed native insertion preserves the send translation source", async t => {
+  const { keydown, input, box } = sendingRuntime(t, {
+    translate: async () => ({ text: "Translation" }),
+    insertAndSend: async () => { throw new Error("Test insertion failed"); }
+  });
+  await keydown({});
+  assert.equal(input.value, "Original text");
+  assert.equal(input.readOnly, false);
+  assert.equal(box.querySelector("span").dataset.error, "true");
+});
+
+for (const autoSend of [false, true]) {
+  test(`send translation keeps auto-send=${autoSend} bound to its captured composer`, async t => {
+    const requests = [];
+    let mode;
+    const { keydown, input } = sendingRuntime(t, {
+      beginSend: async send => { mode = send; return 1; },
+      translate: async () => ({ text: "Translation" }),
+      insertAndSend: async request => { requests.push(request); return { ok: true, sent: mode }; }
+    }, autoSend);
+    await keydown({});
+    assert.deepEqual(requests, [{ id: 1, text: "Translation" }]);
+    assert.equal(mode, autoSend);
+    assert.equal(input.value, "");
+  });
+}
+
+test("auto-translate ignores newer history while browsing old records", async t => {
+  const clock = autoTranslateClock(t);
+  const calls = [];
+  const document = readingRuntime(t, {
+    channelId: "100",
+    settings: { autoTranslate: { enabled: true } },
+    nativeApi: { translate: async ({ text }) => { calls.push(text); return { text: `T:${text}` }; } }
+  });
+  document.append(chatMessage("100", snowflakeAt(clock.now - 86400000), "yesterday"));
+  __test.runAutoTranslate();
+  const history = chatMessage("100", snowflakeAt(clock.now - 1000), "recent history");
+  const boundary = chatMessage("100", snowflakeAt(clock.now, 4095), "already here at enabling time");
+  clock.now += 1000;
+  const fresh = chatMessage("100", snowflakeAt(clock.now), "new arrival");
+  document.append(history, boundary, fresh);
+  __test.runAutoTranslate();
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["new arrival"]);
+  assert.equal(history.querySelector(".dtm-translation-block"), null);
+  assert.equal(boundary.querySelector(".dtm-translation-block"), null);
+});
+
+test("auto-translate starts its clock on enabling before the first rendered message", async t => {
+  const clock = autoTranslateClock(t);
+  const calls = [];
+  const document = readingRuntime(t, {
+    channelId: "100",
+    settings: { autoTranslate: { enabled: true } },
+    nativeApi: { translate: async ({ text }) => { calls.push(text); return { text }; } }
+  });
+  __test.applyAutoTranslateSettings();
+  const history = chatMessage("100", snowflakeAt(clock.now - 1000), "history");
+  clock.now += 1000;
+  const fresh = chatMessage("100", snowflakeAt(clock.now), "new while loading");
+  clock.now += 1000;
+  document.append(history, fresh);
+  __test.runAutoTranslate();
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["new while loading"]);
+  assert.equal(history.querySelector(".dtm-translation-block"), null);
+});
+
+test("auto-translate resets the time baseline when returning to a channel", async t => {
+  const clock = autoTranslateClock(t);
+  const calls = [];
+  const document = readingRuntime(t, {
+    channelId: "100",
+    settings: { autoTranslate: { enabled: true } },
+    nativeApi: { translate: async ({ text }) => { calls.push(text); return { text }; } }
+  });
+  const previousLocation = global.location;
+  t.after(() => {
+    if (previousLocation) global.location = previousLocation;
+    else delete global.location;
+  });
+  document.append(chatMessage("100", snowflakeAt(clock.now - 1000), "old channel history"));
+  __test.runAutoTranslate();
+  clock.now += 1000;
+  global.location = { pathname: "/channels/guild/200" };
+  __test.syncCurrentChannel();
+  document.append(chatMessage("100", snowflakeAt(clock.now), "arrived while away"));
+  clock.now += 1000;
+  global.location.pathname = "/channels/guild/100";
+  __test.syncCurrentChannel();
+  __test.runAutoTranslate();
+  await flushMicrotasks();
+  assert.deepEqual(calls, []);
+  clock.now += 1000;
+  document.append(chatMessage("100", snowflakeAt(clock.now), "arrived after returning"));
+  __test.runAutoTranslate();
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["arrived after returning"]);
+});
+
+test("auto-translate re-enabling excludes messages from the disabled interval", async t => {
+  const clock = autoTranslateClock(t);
+  const calls = [];
+  const document = readingRuntime(t, {
+    channelId: "100",
+    settings: { autoTranslate: { enabled: true } },
+    nativeApi: { translate: async ({ text }) => { calls.push(text); return { text }; } }
+  });
+  document.append(chatMessage("100", snowflakeAt(clock.now - 1000), "old history"));
+  __test.runAutoTranslate();
+  const config = __test.getSettingsForTests();
+  config.autoTranslate.enabled = false;
+  __test.applyAutoTranslateSettings();
+  clock.now += 1000;
+  const missed = chatMessage("100", snowflakeAt(clock.now), "arrived while disabled");
+  clock.now += 1000;
+  config.autoTranslate.enabled = true;
+  __test.applyAutoTranslateSettings();
+  __test.runAutoTranslate();
+  clock.now += 1000;
+  document.append(missed, chatMessage("100", snowflakeAt(clock.now), "arrived after enabling"));
+  __test.runAutoTranslate();
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["arrived after enabling"]);
+});
+
+test("reading translation cache does not collide for Tell Aa now. and Tell BB now.", async t => {
+  const calls = [];
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: { translate: async ({ text }) => { calls.push(text); return { text: `T:${text}` }; } }
+  });
+  const a = chatMessage("100", "1", "Tell Aa now.");
+  const b = chatMessage("100", "2", "Tell BB now.");
+  document.append(a, b);
+  await __test.translateMessage(a);
+  await __test.translateMessage(b);
+  assert.deepEqual(calls, ["Tell Aa now.", "Tell BB now."]);
+  assert.equal(b.querySelector(".dtm-translation-block").textContent, "T:Tell BB now.");
+});
+
+test("reading translation cache key hashes the complete effective model and shared messages", t => {
+  const { createHash } = require("node:crypto");
+  const { normalizeSettings } = require("../src/shared/settings");
+  const { buildTranslationMessages, resolveModelConfig } = require("../src/shared/translate");
+  const config = normalizeSettings({
+    model: { provider: "custom", baseUrl: "https://first.invalid/v1", modelId: "model:a", targetLanguage: "English" },
+    translationStyle: "custom",
+    customPrompt: "Tell Aa now."
+  });
+  readingRuntime(t, { settings: config, nativeApi: {} });
+  const unit = { text: "source:text" };
+  const key = __test.getUnitCacheKey(unit);
+  const expected = createHash("sha256").update(JSON.stringify({
+    model: resolveModelConfig(config.model),
+    messages: buildTranslationMessages({ text: unit.text, direction: "read", settings: config })
+  })).digest("hex");
+  assert.equal(key, expected);
+  for (const changed of [
+    { ...config, model: { ...config.model, baseUrl: "https://second.invalid/v1" } },
+    { ...config, model: { ...config.model, modelId: "model:b" } },
+    { ...config, model: { ...config.model, provider: "openai" } },
+    { ...config, model: { ...config.model, targetLanguage: "French" } },
+    { ...config, translationStyle: "natural" },
+    { ...config, customPrompt: "Tell BB now." }
+  ]) {
+    __test.setRuntimeForTests({ settings: changed });
+    assert.notEqual(__test.getUnitCacheKey(unit), key);
+  }
+});
+
+test("reading translation merges concurrent identical requests", async t => {
+  const pending = deferredTranslation();
+  let calls = 0;
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: { translate: () => { calls += 1; return pending.promise; } }
+  });
+  const a = chatMessage("100", "1", "same text");
+  const b = chatMessage("100", "2", "same text");
+  document.append(a, b);
+  const tasks = [__test.translateMessage(a), __test.translateMessage(b)];
+  pending.resolve({ text: "shared result" });
+  await Promise.all(tasks);
+  assert.equal(calls, 1);
+  for (const message of [a, b]) assert.equal(message.querySelector(".dtm-translation-block").textContent, "shared result");
+});
+
+test("reading translation separates custom endpoints without clearing existing cache", async t => {
+  const calls = [];
+  const pending = deferredTranslation();
+  const document = readingRuntime(t, {
+    settings: { model: { provider: "custom", baseUrl: "https://first.invalid/v1" } },
+    nativeApi: { translate: () => {
+      const endpoint = __test.getSettingsForTests().model.baseUrl;
+      calls.push(endpoint);
+      return endpoint.includes("first") ? pending.promise : Promise.resolve({ text: "second" });
+    } }
+  });
+  const a = chatMessage("100", "1", "same text");
+  const b = chatMessage("100", "2", "same text");
+  document.append(a, b);
+  const first = __test.translateMessage(a);
+  __test.getSettingsForTests().model.baseUrl = "https://second.invalid/v1";
+  const second = __test.translateMessage(b);
+  pending.resolve({ text: "first" });
+  await Promise.all([first, second]);
+  assert.equal(b.querySelector(".dtm-translation-block").textContent, "second");
+  __test.getSettingsForTests().model.baseUrl = "https://first.invalid/v1";
+  await __test.translateMessage(b);
+  assert.equal(b.querySelector(".dtm-translation-block").textContent, "first");
+  assert.deepEqual(calls, ["https://first.invalid/v1", "https://second.invalid/v1"]);
+});
+
+test("reading translation hiding one subscriber leaves a shared request usable by another", async t => {
+  const pending = deferredTranslation();
+  let calls = 0;
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: { translate: () => { calls += 1; return pending.promise; } }
+  });
+  const a = chatMessage("100", "1", "same text");
+  const b = chatMessage("100", "2", "same text");
+  document.append(a, b);
+  const tasks = [__test.translateMessage(a), __test.translateMessage(b)];
+  __test.onMessageDoubleClick({ target: a.children[0], preventDefault() {}, stopPropagation() {} });
+  pending.resolve({ text: "shared result" });
+  await Promise.all(tasks);
+  __test.restoreVisibleTranslations();
+  assert.equal(calls, 1);
+  assert.equal(a.querySelector(".dtm-translation-block"), null);
+  assert.equal(b.querySelector(".dtm-translation-block").textContent, "shared result");
+});
+
+test("reading translation retries after a shared request fails", async t => {
+  const pending = deferredTranslation();
+  let calls = 0;
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: { translate: () => ++calls === 1 ? pending.promise : Promise.resolve({ text: "retry" }) }
+  });
+  const a = chatMessage("100", "1", "same text");
+  const b = chatMessage("100", "2", "same text");
+  document.append(a, b);
+  const tasks = [__test.translateMessage(a), __test.translateMessage(b)];
+  pending.reject(new Error("test failure"));
+  await Promise.all(tasks);
+  assert.equal(a.querySelector(".dtm-translation-block").dataset.dtmError, "true");
+  assert.equal(b.querySelector(".dtm-translation-block").dataset.dtmError, "true");
+  await __test.translateMessage(a);
+  assert.equal(calls, 2);
+  assert.equal(a.querySelector(".dtm-translation-block").textContent, "retry");
+});
+
+test("reading translation cache clear prevents in-flight results from refilling it", async t => {
+  const pending = deferredTranslation();
+  const saves = [];
+  let calls = 0;
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: {
+      translate: () => ++calls === 1 ? pending.promise : Promise.resolve({ text: "fresh" }),
+      saveCache: async value => { saves.push(value); }
+    }
+  });
+  const message = chatMessage("100", "1", "same text");
+  document.append(message);
+  const task = __test.translateMessage(message);
+  await __test.clearTranslationCache();
+  pending.resolve({ text: "old" });
+  await task;
+  assert.equal(message.querySelector(".dtm-translation-block").textContent, "old", "clearing cache does not hide a requested translation");
+  await __test.translateMessage(message);
+  assert.equal(calls, 2);
+  assert.equal(message.querySelector(".dtm-translation-block").textContent, "fresh");
+  assert.deepEqual(saves, [{}]);
+});
+
+test("reading translation cache clear separates old and new in-flight generations", async t => {
+  const oldRequest = deferredTranslation();
+  const newRequest = deferredTranslation();
+  let calls = 0;
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: { translate: () => ++calls === 1 ? oldRequest.promise : newRequest.promise }
+  });
+  const messages = [1, 2, 3].map(id => chatMessage("100", String(id), "same text"));
+  document.append(...messages);
+  const oldTask = __test.translateMessage(messages[0]);
+  await __test.clearTranslationCache();
+  const newTask = __test.translateMessage(messages[1]);
+  oldRequest.resolve({ text: "old" });
+  await oldTask;
+  const sharedTask = __test.translateMessage(messages[2]);
+  newRequest.resolve({ text: "fresh" });
+  await Promise.all([newTask, sharedTask]);
+  assert.equal(calls, 2);
+  assert.equal(messages[2].querySelector(".dtm-translation-block").textContent, "fresh");
+});
+
+test("reading translation cache clear also invalidates a pending disk load", async t => {
+  const pending = deferredTranslation();
+  let calls = 0;
+  const document = readingRuntime(t, {
+    settings: {},
+    nativeApi: {
+      loadCache: () => pending.promise,
+      translate: async () => { calls += 1; return { text: "fresh" }; }
+    }
+  });
+  const message = chatMessage("100", "1", "same text");
+  document.append(message);
+  const loading = __test.loadPersistedCache();
+  await __test.clearTranslationCache();
+  pending.resolve({ [__test.getUnitCacheKey({ text: "same text" })]: "old" });
+  await loading;
+  await __test.translateMessage(message);
+  assert.equal(calls, 1);
+  assert.equal(message.querySelector(".dtm-translation-block").textContent, "fresh");
+});
+
+for (const automatic of [false, true]) {
+  for (const reject of [false, true]) {
+    test(`reading translation hide cancels the entire ${automatic ? "automatic" : "manual"} reply after ${reject ? "failure" : "success"}`, async t => {
+      const pending = deferredTranslation();
+      const calls = [];
+      const document = readingRuntime(t, {
+        settings: {},
+        nativeApi: { translate: ({ text }) => {
+          calls.push(text);
+          return text === "quoted text" ? pending.promise : Promise.resolve({ text: "body result" });
+        } }
+      });
+      const message = chatMessage("100", "1", "reply body");
+      const content = message.children[0];
+      const quote = new FakeElement("div", "quoted text", rect(0, 0, 400, 20));
+      quote.className = "repliedMessage__cancel";
+      message.prepend(quote);
+      document.append(message);
+      const task = automatic ? __test.autoTranslateMessage(message) : __test.translateMessage(message);
+      __test.onMessageDoubleClick({ target: content, preventDefault() {}, stopPropagation() {} });
+      if (reject) pending.reject(new Error("test failure"));
+      else pending.resolve({ text: "quote result" });
+      await task;
+      __test.restoreVisibleTranslations();
+      assert.deepEqual(calls, ["quoted text"], "hiding a pending quote must not start the reply body");
+      assert.equal(message.querySelectorAll(".dtm-translation-block").length, 0);
+    });
+  }
+}

@@ -1,12 +1,12 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
 const { MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS, BABEL_VERSION } = requireShared("defaults");
 const { normalizeSettings } = requireShared("settings");
 const { textMatchesLanguage } = requireShared("language");
+const { buildTranslationMessages, resolveModelConfig } = requireShared("translate");
 
 const RUNTIME_FLAG = "__discordTranslatorModStarted";
-const SETTINGS_BUTTON_ID = "dtm-settings-button";
-const SETTINGS_PANEL_ID = "dtm-settings-panel";
 const SEND_BOX_ID = "dtm-send-box";
 const SETTINGS_LABEL = "Babel";
 const SETTINGS_SECTION_ID_PREFIX = "dtm-settings-section-";
@@ -59,6 +59,7 @@ const STYLE_EMPHASIS_OPTIONS = [
   { value: "strike", label: "删除线" }
 ];
 const BACKGROUND_COLOR_OPTIONS = [
+  { value: "auto", label: "跟随 Discord 主题" },
   { value: "#303446", label: "夜间蓝灰" },
   { value: "#2b2d31", label: "Discord 深灰" },
   { value: "#35384a", label: "石板蓝" },
@@ -77,6 +78,7 @@ const BACKGROUND_COLOR_OPTIONS = [
   { value: "#f2f3f5", label: "Discord 浅灰" }
 ];
 const TEXT_COLOR_OPTIONS = [
+  { value: "auto", label: "自动（跟随主题和背景）" },
   { value: "#f2f3f5", label: "强白" },
   { value: "#dbdee1", label: "Discord 正文" },
   { value: "#cbd5e1", label: "冷灰白" },
@@ -95,31 +97,12 @@ const TEXT_COLOR_OPTIONS = [
   { value: "#7f1d1d", label: "深玫瑰" }
 ];
 const DISCORD_UI = Object.freeze({
-  accountPanel: "panel__6131a",
   accountCategories: "categories__6131a",
   settingCard: "container__75920",
   stack: "stack_dbd263",
   settingStack: "stack_dbd263 baseSettingWrapper__32428",
-  sectionHeading: "heading-xl/normal_cf4812 defaultColor__5345c",
-  divider: "divider__1de9c divider__6131a"
 });
 const DISCORD_STACK_LAYOUTS = Object.freeze({
-  headingOuter: {
-    align: "center",
-    justify: "start",
-    direction: "horizontal",
-    wrap: "false",
-    fullWidth: "true",
-    style: "gap: var(--space-24); padding-bottom: var(--space-lg);"
-  },
-  headingInner: {
-    align: "stretch",
-    justify: "start",
-    direction: "vertical",
-    wrap: "false",
-    fullWidth: "true",
-    style: "gap: var(--space-4); padding: var(--space-0);"
-  },
   rows: {
     align: "stretch",
     justify: "start",
@@ -151,6 +134,9 @@ let settings = normalizeSettings({});
 let providerApiKeyStatus = {};
 let nativeError = "";
 let translationCache = new Map();
+let translationCacheGeneration = 0;
+let pendingTranslations = new Map();
+let messageOperations = new WeakMap();
 let persistCacheTimer = 0;
 let dismissedTranslations = new Set();
 // Message ids the user (or auto-translate) actually translated. The text cache is keyed
@@ -166,7 +152,9 @@ let autoTranslateActive = 0;
 const AUTO_TRANSLATE_CONCURRENCY = 2;
 let domHooksInstalled = false;
 let maintenanceScheduled = false;
-let subnavScrollLock = 0;
+let settingsPageGeneration = 0;
+let settingsPageOpen = false;
+let settingsSections = new Map();
 let nativeControlId = 0;
 let mainWorldMessageId = 0;
 let originalTestRuntime = null;
@@ -196,6 +184,8 @@ function start(api) {
   nativeApi = api;
 
   injectBaseStyles();
+  installMainWorldControlEvents();
+  sendMainWorldMessage("dtm:settings-config", { title: SETTINGS_LABEL, sections: SETTINGS_SECTION_NAV, icon: BABEL_ICON_PATHS });
   installDomHooks();
   loadSettingsSafe().then(loadPersistedCache).then(runDomMaintenance);
 }
@@ -203,8 +193,10 @@ function start(api) {
 async function loadPersistedCache() {
   if (!settings || !settings.readTranslation.cache) return;
   if (!nativeApi || typeof nativeApi.loadCache !== "function") return;
+  const generation = translationCacheGeneration;
   try {
     const stored = await nativeApi.loadCache();
+    if (generation !== translationCacheGeneration) return;
     if (!stored || typeof stored !== "object") return;
     for (const [key, value] of Object.entries(stored)) {
       if (typeof value === "string") translationCache.set(key, value);
@@ -239,7 +231,6 @@ function installDomHooks() {
   domHooksInstalled = true;
 
   document.addEventListener("dblclick", onMessageDoubleClick, true);
-  document.addEventListener("click", onDocumentClick, true);
   const observer = new MutationObserver(scheduleDomMaintenance);
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
@@ -262,12 +253,6 @@ function scheduleDomMaintenance() {
 }
 
 function runDomMaintenance() {
-  if (isSettingsViewOpen()) {
-    ensureSettingsEntry();
-  } else {
-    restoreSettingsContent();
-  }
-
   syncCurrentChannel();
   ensureSendBox();
 
@@ -300,7 +285,7 @@ function injectBaseStyles() {
   const style = document.createElement("style");
   style.id = "dtm-style";
   style.textContent = `
-    .dtm-translation-block {
+    .dtm-translation-block, [data-dtm-style-preview-block] {
       box-sizing: border-box;
       width: fit-content;
       max-width: min(720px, 100%);
@@ -388,6 +373,11 @@ function injectBaseStyles() {
       font-size: 12px;
       white-space: nowrap;
     }
+    #${SEND_BOX_ID} span[data-error="true"] {
+      grid-column: 1 / -1;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
     .dtm-swatch-field {
       display: grid;
       gap: 10px;
@@ -398,7 +388,7 @@ function injectBaseStyles() {
     }
     .dtm-swatch-grid {
       display: grid;
-      grid-template-columns: repeat(8, 28px);
+      grid-template-columns: repeat(9, 28px);
       gap: 8px;
     }
     .dtm-swatch {
@@ -458,635 +448,6 @@ function injectBaseStyles() {
   document.documentElement.appendChild(style);
 }
 
-function ensureSettingsEntry() {
-  const sidebar = findSettingsSidebar();
-  if (!sidebar) return;
-
-  const languageItem = findSettingsSidebarSectionItem(sidebar, "language_and_time_panel")
-    || findSettingsSidebarItem(sidebar, [/^语言和时间$/, /^語言和時間$/, /^Language & Time$/i]);
-  const template = languageItem || findSettingsSidebarSectionItem(sidebar, "appearance_panel")
-    || findSettingsSidebarSectionItem(sidebar, "voice_and_video_panel")
-    || findSettingsSidebarItem(sidebar, [
-    /^快捷键$/,
-    /^快速鍵$/,
-    /^Keybinds$/i,
-    /^外观$/,
-    /^外觀$/,
-    /^Appearance$/i,
-    /^语音和视频$/,
-    /^語音和視訊$/,
-    /^Voice & Video$/i
-  ]) || findAnySettingsSidebarItem(sidebar);
-  const existing = document.getElementById(SETTINGS_BUTTON_ID);
-
-  if (existing) {
-    if (languageItem && existing.previousElementSibling === languageItem) {
-      ensureSettingsSubnav(existing, sidebar);
-      return;
-    }
-    removeSettingsEntrySubnav(existing);
-    existing.remove();
-  }
-
-  if (!template) return;
-  const entry = cloneSettingsSidebarItem(template);
-
-  if (languageItem) {
-    languageItem.insertAdjacentElement("afterend", entry);
-    ensureSettingsSubnav(entry, sidebar);
-    return;
-  }
-
-  const experienceHeader = findSettingsHeader(sidebar, [/^体验$/, /^體驗$/, /^Experience$/i, /^App Settings$/i]);
-  if (experienceHeader) {
-    experienceHeader.insertAdjacentElement("afterend", entry);
-    ensureSettingsSubnav(entry, sidebar);
-    return;
-  }
-
-  sidebar.appendChild(entry);
-  ensureSettingsSubnav(entry, sidebar);
-}
-
-function cloneSettingsSidebarItem(template) {
-  const entry = template.cloneNode(true);
-  for (const node of entry.querySelectorAll("[id]")) node.removeAttribute("id");
-  for (const node of [entry, ...Array.from(entry.querySelectorAll("[data-list-item-id*='settings-sidebar']"))]) {
-    node.removeAttribute("data-list-item-id");
-  }
-  entry.id = SETTINGS_BUTTON_ID;
-  entry.setAttribute("data-list-item-id", "settings-sidebar___babel");
-  entry.setAttribute("aria-label", `${SETTINGS_LABEL} 设置`);
-  entry.setAttribute("data-dtm-settings-entry", "true");
-  entry.removeAttribute("aria-current");
-  entry.removeAttribute("aria-selected");
-  entry.removeAttribute("href");
-  if (entry.tagName === "BUTTON") entry.type = "button";
-  if (entry.tagName !== "BUTTON") entry.setAttribute("role", "button");
-  if (entry.tabIndex < 0) entry.tabIndex = 0;
-  replaceSidebarItemText(entry, SETTINGS_LABEL);
-  replaceSidebarItemIcon(entry);
-  installSettingsEntryHandlers(entry);
-  return entry;
-}
-
-function replaceSidebarItemIcon(entry) {
-  // The entry is cloned from a native Discord row, so it carries that row's icon.
-  // Swap the glyph for the Babel tower while keeping Discord's icon sizing/classes.
-  const icon = entry.querySelector("svg");
-  if (!icon) return;
-  icon.setAttribute("viewBox", "0 0 24 24");
-  icon.setAttribute("fill", "none");
-  icon.setAttribute("stroke", "currentColor");
-  icon.setAttribute("stroke-width", "1.5");
-  icon.setAttribute("stroke-linecap", "round");
-  icon.setAttribute("stroke-linejoin", "round");
-  icon.innerHTML = BABEL_ICON_PATHS;
-}
-
-function ensureSettingsSubnav(entry, sidebar) {
-  if (!entry || !sidebar) return;
-  const existing = findSettingsEntrySubnav(entry);
-  if (existing && existing.querySelector("[data-dtm-settings-subnav-list='true']")) {
-    syncSettingsSubnavVisibility(entry);
-    return;
-  }
-  if (existing) existing.remove();
-
-  removeNestedSettingsSubnav(entry);
-  const template = findSettingsSubnavTemplate(sidebar);
-  if (!template) return;
-
-  const subnav = template.cloneNode(true);
-  subnav.dataset.dtmSettingsSubnav = "true";
-  for (const node of [subnav, ...Array.from(subnav.querySelectorAll("[id]"))]) node.removeAttribute("id");
-
-  const nativeParts = findSettingsSubnavParts(subnav);
-  if (!nativeParts) return;
-
-  const { list, items, allItems, stateSpecs } = nativeParts;
-  list.dataset.dtmSettingsSubnavList = "true";
-  configureSettingsSubnavItems(list, items, allItems, entry, stateSpecs);
-
-  if (!entry.parentElement) return;
-  entry.insertAdjacentElement("afterend", subnav);
-  syncSettingsSubnavVisibility(entry);
-}
-
-function findSettingsSubnavParts(subnav) {
-  const lists = Array.from(subnav.querySelectorAll("[role='list'], [class*='subnav'], [class*='list']"));
-  for (const list of lists) {
-    const items = Array.from(list.children).filter(isSettingsSubnavItem);
-    if (items.length === 0) continue;
-    return { list, items, allItems: items, stateSpecs: collectSettingsSubnavStateSpecs(items) };
-  }
-  return null;
-}
-
-function isSettingsSubnavItem(node) {
-  if (!normalizeText(node.textContent)) return false;
-  const role = node.getAttribute("role");
-  return node.tagName === "A" ||
-    node.tagName === "BUTTON" ||
-    role === "listitem" ||
-    role === "button" ||
-    role === "link" ||
-    node.tabIndex >= 0 ||
-    String(node.className || "").split(/\s+/).some(name => /item/i.test(name));
-}
-
-function collectSettingsSubnavStateSpecs(items) {
-  for (const item of items) {
-    const specs = collectNodeStateSpecs(item);
-    if (specs.length > 0) return specs;
-  }
-  return [];
-}
-
-function collectNodeStateSpecs(root) {
-  const specs = [];
-  const nodes = [root, ...Array.from(root.querySelectorAll("[class*='active'], [class*='selected'], [aria-current], [aria-selected]"))];
-  for (const node of nodes) {
-    const tokens = [];
-    for (const name of String(node.className || "").split(/\s+/)) {
-      if (/active|selected/i.test(name) && !tokens.includes(name)) tokens.push(name);
-    }
-    const attributes = {};
-    for (const name of ["aria-current", "aria-selected"]) {
-      const value = node.getAttribute(name);
-      if (value != null) attributes[name] = value;
-    }
-    if (tokens.length === 0 && Object.keys(attributes).length === 0) continue;
-    const path = getChildPath(root, node);
-    if (path) specs.push({ path, tokens, attributes });
-  }
-  return specs;
-}
-
-function getChildPath(root, node) {
-  const path = [];
-  let current = node;
-  while (current && current !== root) {
-    const parent = current.parentElement;
-    if (!parent) return null;
-    const index = Array.from(parent.children).indexOf(current);
-    if (index < 0) return null;
-    path.unshift(index);
-    current = parent;
-  }
-  return current === root ? path : null;
-}
-
-function findChildByPath(root, path) {
-  let current = root;
-  for (const index of path) {
-    current = current && current.children ? current.children[index] : null;
-    if (!current) return null;
-  }
-  return current;
-}
-
-function applySettingsSubnavState(item, stateSpecs) {
-  for (const spec of stateSpecs || []) {
-    const target = findChildByPath(item, spec.path);
-    if (!target) continue;
-    if (spec.tokens && spec.tokens.length > 0) target.classList.add(...spec.tokens);
-    for (const [name, value] of Object.entries(spec.attributes || {})) target.setAttribute(name, value);
-  }
-}
-
-function clearSettingsSubnavState(item) {
-  removeStateClassTokens(item);
-  item.removeAttribute("aria-current");
-  item.removeAttribute("aria-selected");
-  for (const node of item.querySelectorAll("[class*='active'], [class*='selected']")) {
-    removeStateClassTokens(node);
-  }
-  for (const node of item.querySelectorAll("[aria-current], [aria-selected]")) {
-    node.removeAttribute("aria-current");
-    node.removeAttribute("aria-selected");
-  }
-}
-
-function configureSettingsSubnavItems(list, nativeItems, allNativeItems, entry, stateSpecs) {
-  const sections = SETTINGS_SECTION_NAV;
-  const items = nativeItems.slice(0, sections.length);
-  const template = items[0] || nativeItems[0];
-
-  while (items.length < sections.length && template) {
-    const clone = template.cloneNode(true);
-    list.appendChild(clone);
-    items.push(clone);
-  }
-
-  for (const item of allNativeItems) {
-    if (!items.includes(item)) item.remove();
-  }
-
-  items.forEach((item, index) => configureSettingsSubnavItem(item, sections[index], entry, stateSpecs, index === 0));
-  syncSettingsSubnavTrackLength(list, items);
-}
-
-function configureSettingsSubnavItem(item, section, entry, stateSpecs, selected) {
-  removeSettingsSubnavItemState(item, entry);
-  const action = findSettingsSubnavActionNode(item);
-  item.dataset.dtmSubnavTarget = section.key;
-  item.__dtmSubnavStateSpecs = stateSpecs;
-  if (item.getAttribute("role") !== "listitem") item.setAttribute("role", "button");
-  action.setAttribute("role", "button");
-  item.removeAttribute("aria-expanded");
-  item.removeAttribute("aria-current");
-  item.removeAttribute("aria-selected");
-  action.removeAttribute("aria-expanded");
-  action.removeAttribute("aria-current");
-  action.removeAttribute("aria-selected");
-  action.removeAttribute("href");
-  if (action.tagName === "BUTTON") action.type = "button";
-  if (action.tabIndex < 0) action.tabIndex = 0;
-  replaceSidebarItemText(item, section.label);
-  installSettingsSubnavHandlers(item, section.key, entry);
-  if (selected) markSettingsSubnavItemSelected(item, stateSpecs);
-  return item;
-}
-
-function findSettingsSubnavActionNode(item) {
-  if (item.getAttribute("role") === "listitem") {
-    return item.querySelector("a, button, [role='button'], [role='link'], [tabindex], [class*='item']") || item;
-  }
-  return item;
-}
-
-function removeSettingsSubnavItemState(item, entry) {
-  item.removeAttribute("id");
-  item.removeAttribute("data-dtm-settings-entry");
-  delete item.dataset.dtmSettingsEntry;
-  delete item.dataset.dtmActiveTokens;
-  const activeTokens = String(entry.dataset.dtmActiveTokens || "").split(/\s+/).filter(Boolean);
-  item.classList.remove("dtm-settings-entry-active", ...activeTokens);
-  removeStateClassTokens(item);
-  for (const node of item.querySelectorAll("[id]")) node.removeAttribute("id");
-  for (const node of item.querySelectorAll("[class*='active']")) {
-    node.classList.remove("dtm-settings-entry-active", ...activeTokens);
-    removeStateClassTokens(node);
-  }
-  for (const node of item.querySelectorAll("[class*='selected']")) {
-    removeStateClassTokens(node);
-  }
-}
-
-function removeStateClassTokens(node) {
-  const kept = String(node.className || "").split(/\s+/).filter(name => {
-    return name && !/active|selected/i.test(name);
-  });
-  node.className = kept.join(" ");
-}
-
-function findSettingsEntrySubnav(entry) {
-  const sibling = entry && entry.nextElementSibling;
-  return sibling && sibling.dataset.dtmSettingsSubnav === "true" ? sibling : null;
-}
-
-function removeNestedSettingsSubnav(entry) {
-  if (!entry) return;
-  for (const node of entry.querySelectorAll("[data-dtm-settings-subnav='true']")) node.remove();
-}
-
-function removeSettingsEntrySubnav(entry) {
-  const subnav = findSettingsEntrySubnav(entry);
-  if (subnav) subnav.remove();
-  removeNestedSettingsSubnav(entry);
-}
-
-function syncSettingsSubnavVisibility(entry) {
-  const open = Boolean(document.getElementById(SETTINGS_PANEL_ID) || entry.classList.contains("dtm-settings-entry-active"));
-  setSettingsSubnavOpen(entry, open);
-}
-
-function setSettingsSubnavOpen(entry, open) {
-  const subnav = findSettingsEntrySubnav(entry);
-  if (!subnav) {
-    entry.removeAttribute("aria-expanded");
-    return;
-  }
-
-  entry.setAttribute("aria-expanded", open ? "true" : "false");
-  subnav.hidden = !open;
-  if (open) subnav.removeAttribute("aria-hidden");
-  else subnav.setAttribute("aria-hidden", "true");
-}
-
-function findSettingsSubnavTemplate(sidebar) {
-  if (!sidebar) return null;
-  return Array.from(sidebar.querySelectorAll("[class*='subnavContainer']")).find(node => {
-    return node.dataset.dtmSettingsSubnav !== "true" && !node.closest(`#${SETTINGS_BUTTON_ID}`) && normalizeText(node.textContent);
-  }) || null;
-}
-
-function installSettingsSubnavHandlers(item, sectionKey, entry) {
-  const activate = event => {
-    event.preventDefault();
-    event.stopPropagation();
-    markSettingsEntryActive(entry);
-    // Move the indicator straight to the clicked item (one native spring), and
-    // hold off scroll-spy so it doesn't re-target the spring as the smooth scroll
-    // passes the intermediate sections (that re-targeting is the stutter).
-    setSettingsSubnavItemSelected(item);
-    subnavScrollLock = Date.now() + 700;
-    const scroll = () => scrollToSettingsSection(sectionKey, "smooth");
-    if (document.getElementById(SETTINGS_PANEL_ID)) {
-      scroll();
-      return;
-    }
-    Promise.resolve(openSettingsPanel({ skipInitialScroll: true })).then(scroll);
-  };
-
-  item.addEventListener("click", activate);
-  item.addEventListener("keydown", event => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    activate(event);
-  });
-}
-
-function markSettingsSubnavItemSelected(item, stateSpecs = item.__dtmSubnavStateSpecs || []) {
-  const action = findSettingsSubnavActionNode(item);
-  applySettingsSubnavState(item, stateSpecs);
-  action.setAttribute("aria-selected", "true");
-  action.setAttribute("aria-current", "page");
-  syncSettingsSubnavIndicator(item);
-}
-
-function clearSettingsSubnavItemSelected(item) {
-  const action = findSettingsSubnavActionNode(item);
-  clearSettingsSubnavState(item);
-  item.removeAttribute("aria-selected");
-  item.removeAttribute("aria-current");
-  action.removeAttribute("aria-selected");
-  action.removeAttribute("aria-current");
-}
-
-function setSettingsSubnavItemSelected(item, stateSpecs = item.__dtmSubnavStateSpecs || []) {
-  const list = item.parentElement;
-  if (list) {
-    for (const sibling of Array.from(list.children)) clearSettingsSubnavItemSelected(sibling);
-  }
-  markSettingsSubnavItemSelected(item, stateSpecs);
-}
-
-function syncSettingsSubnavIndicator(item) {
-  const list = item && item.parentElement;
-  if (!list) return;
-  const children = Array.from(list.children);
-  const thumbAnchor = children.find(child => String(child.className || "").includes("thumbAnchor"));
-  const track = children.find(child => String(child.className || "").includes("track"));
-  const trackThumb = track && Array.from(track.children).find(child => String(child.className || "").includes("thumb"));
-  const menuItems = Array.from(list.children).filter(child => child.dataset && child.dataset.dtmSubnavTarget);
-  const index = menuItems.indexOf(item);
-  if (index < 0) return;
-  if (thumbAnchor && thumbAnchor.style) thumbAnchor.style.gridRow = String(index + 1);
-  syncSettingsSubnavTrackThumb(trackThumb, thumbAnchor, item, menuItems[0]);
-}
-
-function syncSettingsSubnavTrackLength(list, menuItems) {
-  const track = Array.from(list.children).find(child => String(child.className || "").includes("track"));
-  if (!track || !track.style || menuItems.length === 0) return;
-  track.style.gridRow = `1 / span ${menuItems.length}`;
-
-  const firstRect = menuItems[0].getBoundingClientRect();
-  const lastRect = menuItems[menuItems.length - 1].getBoundingClientRect();
-  const top = Number.isFinite(firstRect.top) ? firstRect.top : firstRect.y;
-  const lastTop = Number.isFinite(lastRect.top) ? lastRect.top : lastRect.y;
-  const bottom = lastTop + lastRect.height;
-  const height = bottom - top;
-  if (Number.isFinite(height) && height > 0) track.style.height = formatCssPixel(height);
-}
-
-function syncSettingsSubnavToScroll(panel = document.getElementById(SETTINGS_PANEL_ID)) {
-  if (!panel) return;
-  // While a click-driven smooth scroll is in flight the indicator is already
-  // springing to its target; don't re-target it from intermediate scroll positions.
-  if (Date.now() < subnavScrollLock) return;
-  const entry = document.getElementById(SETTINGS_BUTTON_ID);
-  const subnav = entry && findSettingsEntrySubnav(entry);
-  if (!subnav || subnav.hidden) return;
-  const sectionKey = currentSettingsSectionKey(panel);
-  if (!sectionKey) return;
-  const item = Array.from(subnav.querySelectorAll("[role='listitem']"))
-    .find(node => node.dataset.dtmSubnavTarget === sectionKey);
-  if (!item) return;
-  setSettingsSubnavItemSelected(item);
-}
-
-function currentSettingsSectionKey(panel) {
-  const sections = SETTINGS_SECTION_NAV
-    .map(spec => ({ key: spec.key, node: document.getElementById(settingsSectionId(spec.key)) }))
-    .filter(section => section.node && typeof section.node.getBoundingClientRect === "function");
-  if (sections.length === 0) return "";
-
-  const mount = panel && panel.parentElement;
-
-  // When the scroller is at (or near) the bottom, the last section is active even
-  // though it can't push its top up to the reference line. Without this the
-  // indicator never reaches the final item (译文设置).
-  if (mount && Number.isFinite(mount.scrollTop) && Number.isFinite(mount.clientHeight) && Number.isFinite(mount.scrollHeight)
-    && mount.scrollHeight > mount.clientHeight
-    && mount.scrollTop + mount.clientHeight >= mount.scrollHeight - 4) {
-    return sections[sections.length - 1].key;
-  }
-
-  const mountRect = mount && typeof mount.getBoundingClientRect === "function" ? mount.getBoundingClientRect() : null;
-  const referenceY = mountRect && Number.isFinite(mountRect.y) && mountRect.height > 0
-    ? mountRect.y + Math.min(180, mountRect.height * 0.35)
-    : 180;
-
-  let active = sections[0];
-  for (const section of sections) {
-    const rect = section.node.getBoundingClientRect();
-    const top = Number.isFinite(rect.top) ? rect.top : rect.y;
-    if (top <= referenceY) active = section;
-    else break;
-  }
-  return active.key;
-}
-
-function syncSettingsSubnavTrackThumb(trackThumb, thumbAnchor, item, firstItem) {
-  if (!trackThumb || !trackThumb.style || !thumbAnchor) return;
-  if (requestMainWorldSubnavThumbSync(trackThumb)) return;
-  const track = trackThumb.parentElement;
-  if (!track || typeof track.getBoundingClientRect !== "function" || typeof thumbAnchor.getBoundingClientRect !== "function") return;
-  let offset = thumbAnchor.getBoundingClientRect().y - track.getBoundingClientRect().y;
-  if (Math.abs(offset) < 0.5 && item !== firstItem && item && firstItem) {
-    offset = item.getBoundingClientRect().y - firstItem.getBoundingClientRect().y;
-  }
-  if (!Number.isFinite(offset)) return;
-  trackThumb.style.transform = Math.abs(offset) < 0.5 ? "none" : `translate3d(0px, ${formatCssPixel(offset)}, 0px)`;
-}
-
-function formatCssPixel(value) {
-  const rounded = Math.round(value * 1000) / 1000;
-  return `${Object.is(rounded, -0) ? 0 : rounded}px`;
-}
-
-function requestMainWorldSubnavThumbSync(trackThumb) {
-  let id = trackThumb.dataset.dtmSubnavThumbId;
-  if (!id) {
-    nativeControlId += 1;
-    id = `dtm-subnav-thumb-${nativeControlId}`;
-    trackThumb.dataset.dtmSubnavThumbId = id;
-  }
-
-  const detail = { id };
-  return sendMainWorldMessage("dtm:sync-subnav-thumb", detail);
-}
-
-function installSettingsEntryHandlers(entry) {
-  entry.addEventListener("click", event => {
-    event.preventDefault();
-    event.stopPropagation();
-    markSettingsEntryActive(entry);
-    openSettingsPanel();
-  });
-
-  entry.addEventListener("keydown", event => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    event.stopPropagation();
-    markSettingsEntryActive(entry);
-    openSettingsPanel();
-  });
-}
-
-function markSettingsEntryActive(entry) {
-  subnavScrollLock = 0;
-  const sidebar = findSettingsSidebar();
-  const activeTokens = sidebar ? findActiveSidebarClassTokens(sidebar) : [];
-
-  if (sidebar && activeTokens.length > 0) {
-    for (const node of sidebar.querySelectorAll("[class*='active']")) {
-      if (!entry.contains(node)) node.classList.remove(...activeTokens);
-    }
-  }
-
-  entry.classList.add("dtm-settings-entry-active");
-  const innerItem = entry.querySelector("[class*='item_'], [class*='item-']") || entry;
-  if (activeTokens.length > 0) {
-    innerItem.classList.add(...activeTokens);
-    entry.dataset.dtmActiveTokens = activeTokens.join(" ");
-  }
-  syncSettingsSubnavVisibility(entry);
-}
-
-function clearSettingsEntryActive() {
-  const entry = document.getElementById(SETTINGS_BUTTON_ID);
-  if (!entry) return;
-
-  entry.classList.remove("dtm-settings-entry-active");
-  const activeTokens = String(entry.dataset.dtmActiveTokens || "").split(/\s+/).filter(Boolean);
-
-  if (activeTokens.length > 0) {
-    entry.classList.remove(...activeTokens);
-    for (const node of entry.querySelectorAll("[class*='active']")) {
-      node.classList.remove(...activeTokens);
-    }
-    delete entry.dataset.dtmActiveTokens;
-  }
-  syncSettingsSubnavVisibility(entry);
-}
-
-function findActiveSidebarClassTokens(sidebar) {
-  const active = Array.from(sidebar.querySelectorAll("[class*='active']")).find(node => {
-    const box = node.getBoundingClientRect();
-    return box.width >= 80 && box.height >= 18 && box.height <= 72;
-  });
-  return active ? Array.from(active.classList).filter(name => name.includes("active")) : [];
-}
-
-function replaceSidebarItemText(entry, text) {
-  const textTarget = Array.from(entry.querySelectorAll("span, div")).find(node => {
-    return normalizeText(node.textContent) && node.children.length === 0;
-  });
-
-  if (textTarget) textTarget.textContent = text;
-  else entry.textContent = text;
-}
-
-function findSettingsSidebar() {
-  const rootSidebar = findSettingsSidebarRoot();
-  if (rootSidebar) return rootSidebar;
-
-  const candidates = Array.from(document.querySelectorAll("nav, [role='navigation'], [role='tablist'], [class*='sidebar'], [class*='side']"));
-  return candidates.find(isSettingsSidebarCandidate) || null;
-}
-
-function findSettingsSidebarRoot() {
-  const candidates = Array.from(document.querySelectorAll("aside[class*='sidebar'], [class*='standardSidebarView'] aside, [class*='layer'] aside[class*='sidebar']"));
-
-  return candidates.find(isSettingsSidebarCandidate) || null;
-}
-
-function isSettingsSidebarCandidate(node) {
-  const box = node.getBoundingClientRect();
-  if (box.width < 120 || box.width > 420 || box.height < 260) return false;
-
-  if (node.querySelector("[data-list-item-id*='settings-sidebar___']")) return true;
-
-  const hiddenLabel = normalizeText(node.querySelector("[class*='hiddenVisually']")?.textContent);
-  if (/^Settings sidebar$/i.test(hiddenLabel)) return true;
-
-  const text = node.textContent || "";
-  return /My Account|Profiles|Privacy|Appearance|Voice|Keybinds|Notifications|账户|账号|个人资料|隐私|外观|语音|通知|帳號|個人資料|隱私|外觀|語音|通知/.test(text);
-}
-
-function findSettingsSidebarSectionItem(sidebar, sectionId) {
-  const suffix = `___${sectionId}`;
-  const node = Array.from(sidebar.querySelectorAll("[data-list-item-id*='settings-sidebar___']"))
-    .find(candidate => String(candidate.getAttribute("data-list-item-id") || candidate.dataset.listItemId || "").endsWith(suffix));
-  return settingsSidebarItemRow(node);
-}
-
-function findAnySettingsSidebarItem(sidebar) {
-  const structural = sidebar.querySelector("[data-list-item-id*='settings-sidebar___']");
-  if (structural) return settingsSidebarItemRow(structural);
-  const sidebarBox = sidebar.getBoundingClientRect();
-  const node = Array.from(sidebar.querySelectorAll("button, [role='button'], [role='tab'], [tabindex], a, [class*='item']"))
-    .find(candidate => {
-      const box = candidate.getBoundingClientRect();
-      return box.width >= 80 && box.height >= 18 && box.height <= 72
-        && box.x >= sidebarBox.x - 8 && box.right <= sidebarBox.right + 8;
-    });
-  return settingsSidebarItemRow(node);
-}
-
-function settingsSidebarItemRow(node) {
-  if (!node) return null;
-  return node.closest("[role='listitem']") || node.closest("[class*='itemContainer']") || node;
-}
-
-function findSettingsSidebarItem(sidebar, patterns) {
-  const sidebarBox = sidebar.getBoundingClientRect();
-  const candidates = Array.from(sidebar.querySelectorAll("button, [role='button'], [role='tab'], [tabindex], a, [class*='item']"));
-
-  return settingsSidebarItemRow(candidates.find(node => {
-    const box = node.getBoundingClientRect();
-    if (box.width < 80 || box.height < 18 || box.height > 72) return false;
-    if (box.x < sidebarBox.x - 8 || box.right > sidebarBox.right + 8) return false;
-    const text = normalizeText(node.textContent);
-    return patterns.some(pattern => pattern.test(text));
-  }));
-}
-
-function findSettingsHeader(sidebar, patterns) {
-  const sidebarBox = sidebar.getBoundingClientRect();
-  const candidates = Array.from(sidebar.querySelectorAll("*"));
-
-  return candidates.find(node => {
-    const box = node.getBoundingClientRect();
-    if (box.width < 40 || box.height < 10 || box.height > 52) return false;
-    if (box.x < sidebarBox.x - 8 || box.right > sidebarBox.right + 8) return false;
-    const text = normalizeText(node.textContent);
-    return patterns.some(pattern => pattern.test(text));
-  }) || null;
-}
-
 function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -1095,41 +456,15 @@ function settingsSectionId(sectionKey) {
   return `${SETTINGS_SECTION_ID_PREFIX}${sectionKey}`;
 }
 
-function scrollToSettingsSection(sectionKey, behavior = "auto") {
-  const target = document.getElementById(settingsSectionId(sectionKey));
-  if (target) target.scrollIntoView({ block: "start", behavior });
-}
-
-function isSettingsViewOpen() {
-  if (document.getElementById(SETTINGS_BUTTON_ID) || document.getElementById(SETTINGS_PANEL_ID)) return true;
-  return Boolean(findSettingsSidebarRoot());
-}
-
-function onDocumentClick(event) {
-  const panel = document.getElementById(SETTINGS_PANEL_ID);
-  if (!panel) return;
-
-  const target = event.target instanceof Element ? event.target : null;
-
-  if (!target || target.closest(`#${SETTINGS_PANEL_ID}, #${SETTINGS_BUTTON_ID}, [data-dtm-settings-subnav='true']`)) return;
-  const sidebar = findSettingsSidebar();
-  if (sidebar && sidebar.contains(target)) {
-    closeSettingsPanel();
+async function openSettingsPanel() {
+  if (settingsPageOpen) {
+    mountSettingsSections();
     return;
   }
-  if (target.closest("button, [role='button'], [role='tab'], a")) closeSettingsPanel();
-}
-
-async function openSettingsPanel(options = {}) {
+  settingsPageOpen = true;
+  const generation = ++settingsPageGeneration;
   await loadSettingsSafe();
-
-  const existing = document.getElementById(SETTINGS_PANEL_ID);
-  if (existing) existing.remove();
-  restoreSettingsContent();
-
-  const panel = document.createElement("section");
-  panel.id = SETTINGS_PANEL_ID;
-  panel.className = DISCORD_UI.accountPanel;
+  if (generation !== settingsPageGeneration) return;
 
   const body = div(DISCORD_UI.accountCategories);
   const formState = JSON.parse(JSON.stringify(settings));
@@ -1153,7 +488,8 @@ async function openSettingsPanel(options = {}) {
   if (nativeError) showNativeToast(nativeError, "failure");
 
   function currentSettingsRequest() {
-    const request = { settings: formState };
+    const { __apiKey, ...preferences } = formState;
+    const request = { settings: normalizeSettings(preferences) };
     const apiKey = apiKeyValueForRequest(formState.__apiKey);
     if (apiKey) request.apiKey = apiKey;
     return request;
@@ -1232,13 +568,16 @@ async function openSettingsPanel(options = {}) {
     if (refreshModelsInFlight) return;
     refreshModelsInFlight = true;
     refreshModels.setLoading(true);
+    const request = currentSettingsRequest();
+    const requestKey = modelCacheKey(providerById(formState.model.provider));
     try {
-      const result = await nativeApi.listModels(currentSettingsRequest());
+      const result = await nativeApi.listModels(request);
+      if (generation !== settingsPageGeneration) return;
       const models = Array.isArray(result && result.models) ? result.models : [];
       if (models.length === 0) throw new Error("没有可用模型。");
-      const provider = providerById(formState.model.provider);
-      fetchedModelOptions.set(modelCacheKey(provider), models);
-      if (!models.some(model => model.value === formState.model.modelId)) {
+      fetchedModelOptions.set(requestKey, models);
+      if (requestKey !== modelCacheKey(providerById(formState.model.provider))) return;
+      if (formState.model.modelId === request.settings.model.modelId && !models.some(model => model.value === formState.model.modelId)) {
         formState.model.modelId = models[0].value;
       }
       renderModelField();
@@ -1348,19 +687,20 @@ async function openSettingsPanel(options = {}) {
     // Saving is instant local I/O: no spinner, no progress/success toast. Only a
     // double-submit guard, and a toast if it actually fails.
     save.disabled = true;
+    const request = currentSettingsRequest();
+    const stagedKey = formState.__apiKey;
     try {
-      const apiKey = apiKeyValueForRequest(formState.__apiKey);
-      delete formState.__apiKey;
-      settings = await nativeApi.saveSettings(formState);
-      if (apiKey) await nativeApi.setApiKey({ provider: formState.model.provider, apiKey });
-      providerApiKeyStatus = typeof nativeApi.getApiKeyStatus === "function"
-        ? await nativeApi.getApiKeyStatus()
-        : providerApiKeyStatus;
-      renderProviderSelect();
-      renderApiKeyField();
+      if (request.apiKey) await nativeApi.setApiKey({ provider: request.settings.model.provider, apiKey: request.apiKey });
+      settings = await nativeApi.saveSettings(request.settings);
       ensureSendBox();
       applyAutoTranslateSettings();
       refreshTranslationStyles();
+      providerApiKeyStatus = typeof nativeApi.getApiKeyStatus === "function"
+        ? await nativeApi.getApiKeyStatus()
+        : providerApiKeyStatus;
+      if (generation !== settingsPageGeneration) return;
+      renderProviderSelect();
+      if (formState.model.provider === request.settings.model.provider && formState.__apiKey === stagedKey) renderApiKeyField();
       save.flashLabel("已保存");
     } catch (error) {
       showNativeToast(publicError(error), "failure");
@@ -1371,9 +711,28 @@ async function openSettingsPanel(options = {}) {
 
   const saveRow = settingRow(buttonRow([openConfig, clearCache, save]));
   saveRow.id = settingsSectionId("save");
-  body.append(saveRow, aboutFooter());
-  panel.append(body);
-  mountSettingsPanel(panel, { skipInitialScroll: Boolean(options.skipInitialScroll) });
+  body.lastElementChild.append(saveRow, aboutFooter());
+  settingsSections = new Map(SETTINGS_SECTION_NAV.map(({ key }) => [key, body.querySelector(`#${settingsSectionId(key)}`)]));
+  mountSettingsSections();
+}
+
+function mountSettingsSections() {
+  for (const [key, content] of settingsSections) {
+    const slot = document.getElementById(`dtm-settings-slot-${key}`);
+    if (!slot || !content || content.parentElement === slot) continue;
+    slot.appendChild(content);
+    for (const host of content.querySelectorAll("[data-dtm-control-id]")) {
+      requestMainWorldControl(host, host.__dtmControlSpec);
+    }
+  }
+}
+
+function closeSettingsPanel() {
+  settingsPageOpen = false;
+  settingsPageGeneration += 1;
+  for (const content of settingsSections.values()) disposeControls(content);
+  settingsSections.clear();
+  mainWorldControlCallbacks.clear();
 }
 
 const AUTHOR_X_URL = "https://x.com/unflwMaige";
@@ -1461,145 +820,9 @@ function aboutFooter() {
   return wrap;
 }
 
-function closeSettingsPanel() {
-  const existing = document.getElementById(SETTINGS_PANEL_ID);
-  if (existing) existing.remove();
-  clearSettingsEntryActive();
-  restoreSettingsContent();
-}
-
-function mountSettingsPanel(panel, options = {}) {
-  const settingsContent = findSettingsContent();
-  if (settingsContent) {
-    const mount = findSettingsPanelMount(settingsContent);
-    updateSettingsHeaderTitle(settingsContent);
-    // Hide the native settings content before inserting our panel so the two are
-    // never both visible for a frame (that swap is the flicker on open).
-    hideSettingsContentSiblings(mount, panel);
-    mount.prepend(panel);
-    installSettingsSectionScrollSpy(panel, mount);
-    if (!options.skipInitialScroll) panel.scrollIntoView({ block: "start", behavior: "auto" });
-  } else {
-    document.body.appendChild(panel);
-    installSettingsSectionScrollSpy(panel, null);
-  }
-}
-
-function installSettingsSectionScrollSpy(panel, scrollRoot) {
-  let scheduled = false;
-  const sync = () => {
-    scheduled = false;
-    if (!document.getElementById(SETTINGS_PANEL_ID)) return;
-    syncSettingsSubnavToScroll(panel);
-  };
-  const onScroll = () => {
-    if (scheduled) return;
-    scheduled = true;
-    const schedule = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
-      ? window.requestAnimationFrame.bind(window)
-      : callback => callback();
-    schedule(sync);
-  };
-  const target = scrollRoot && typeof scrollRoot.addEventListener === "function"
-    ? scrollRoot
-    : typeof window !== "undefined" ? window : null;
-  if (target && typeof target.addEventListener === "function") target.addEventListener("scroll", onScroll, { passive: true });
-  onScroll();
-}
-
-function findSettingsPanelMount(settingsContent) {
-  const contentBody = hasClassPart(settingsContent, "contentBody")
-    ? settingsContent
-    : settingsContent.querySelector("[class*='contentBody']");
-  const root = contentBody || settingsContent;
-  const scrollers = Array.from(root.querySelectorAll("[class*='scroller']"));
-
-  return scrollers.find(node => {
-    const box = node.getBoundingClientRect();
-    return box.width >= 320 && box.height >= 260;
-  }) || root;
-}
-
-function hideSettingsContentSiblings(container, panel) {
-  for (const child of Array.from(container.children)) {
-    if (child === panel) continue;
-    if (child.dataset.dtmHidden === "true") continue;
-    child.dataset.dtmHidden = "true";
-    child.dataset.dtmPreviousDisplay = child.style.display || "";
-    child.setAttribute("aria-hidden", "true");
-    child.style.display = "none";
-  }
-}
-
-function restoreSettingsContent() {
-  restoreSettingsHeaderTitle();
-
-  for (const node of document.querySelectorAll("[data-dtm-hidden='true']")) {
-    node.style.display = node.dataset.dtmPreviousDisplay || "";
-    delete node.dataset.dtmHidden;
-    delete node.dataset.dtmPreviousDisplay;
-    node.removeAttribute("aria-hidden");
-  }
-}
-
-function updateSettingsHeaderTitle(settingsContent) {
-  const header = settingsContent.querySelector("[class*='contentHeader']");
-  if (!header) return;
-
-  const title = Array.from(header.querySelectorAll("h1, h2, h3, div, span")).find(node => {
-    if (node.closest("button, [role='button'], a")) return false;
-    if (node.children.length > 0) return false;
-    return Boolean(normalizeText(node.textContent));
-  });
-  if (!title) return;
-
-  if (title.dataset.dtmPreviousText === undefined) {
-    title.dataset.dtmPreviousText = title.textContent;
-  }
-  title.dataset.dtmHeaderTitle = "true";
-  title.textContent = SETTINGS_LABEL;
-}
-
-function restoreSettingsHeaderTitle() {
-  for (const node of document.querySelectorAll("[data-dtm-header-title='true']")) {
-    node.textContent = node.dataset.dtmPreviousText || "";
-    delete node.dataset.dtmHeaderTitle;
-    delete node.dataset.dtmPreviousText;
-  }
-}
-
-function findSettingsContent() {
-  const sidebar = findSettingsSidebar();
-  if (!sidebar) return null;
-
-  const sidebarBox = sidebar.getBoundingClientRect();
-  const root = sidebar.closest("[role='dialog'], [class*='modalContent'], [class*='standardSidebarView'], [class*='layer']") || document.body;
-  const candidates = Array.from(root.querySelectorAll("main, section, div, [role='main'], [role='tabpanel']"));
-  const matches = candidates.filter(node => {
-    if (node === sidebar || node.contains(sidebar)) return false;
-    const box = node.getBoundingClientRect();
-    return box.x >= sidebarBox.right - 2 && box.width >= 320 && box.height >= 260;
-  });
-
-  matches.sort((a, b) => {
-    const aBox = a.getBoundingClientRect();
-    const bBox = b.getBoundingClientRect();
-    const aGap = Math.abs(aBox.x - sidebarBox.right);
-    const bGap = Math.abs(bBox.x - sidebarBox.right);
-    if (aGap !== bGap) return aGap - bGap;
-    return bBox.height - aBox.height;
-  });
-
-  return matches[0] || null;
-}
-
-function hasClassPart(node, part) {
-  return String(node?.className || "").includes(part);
-}
-
 function onMessageDoubleClick(event) {
   if (!settings || !settings.enabled) return;
-  if (event.target.closest(`#${SETTINGS_PANEL_ID}, #${SEND_BOX_ID}, .dtm-translation-block`)) return;
+  if (event.target.closest(`[data-dtm-section-key], #${SEND_BOX_ID}, .dtm-translation-block`)) return;
 
   const message = findMessage(event.target);
   if (!message) return;
@@ -1608,6 +831,7 @@ function onMessageDoubleClick(event) {
     event.preventDefault();
     event.stopPropagation();
     clearTextSelection();
+    messageOperations.delete(message);
     removeAllTranslations(message);
     // Remember the dismissal so periodic restore from cache doesn't bring it back.
     dismissedTranslations.add(getMessageId(message));
@@ -1635,13 +859,17 @@ function clearTextSelection() {
   if (selection && typeof selection.removeAllRanges === "function") selection.removeAllRanges();
 }
 
-async function translateMessage(message) {
+async function translateMessage(message, automatic = false) {
+  const operation = Symbol();
+  messageOperations.set(message, operation);
   for (const unit of getMessageUnits(message)) {
-    await translateUnit(message, unit);
+    if (messageOperations.get(message) !== operation) return;
+    if (automatic && shouldSkipSameLanguage(unit.text)) continue;
+    await translateUnit(message, unit, operation);
   }
 }
 
-async function translateUnit(message, unit) {
+async function translateUnit(message, unit, operation) {
   const key = getUnitCacheKey(unit);
   if (settings.readTranslation.cache && translationCache.has(key)) {
     translatedMessages.add(getMessageId(message));
@@ -1651,14 +879,26 @@ async function translateUnit(message, unit) {
 
   const placeholder = renderUnitTranslation(message, unit, "正在翻译...");
   try {
-    const result = await nativeApi.translate({ direction: "read", text: unit.text });
-    cacheTranslation(key, result.text);
+    let pending = pendingTranslations.get(key);
+    if (!pending) {
+      const generation = translationCacheGeneration;
+      pending = Promise.resolve(nativeApi.translate({ direction: "read", text: unit.text }))
+        .then(result => {
+          if (generation === translationCacheGeneration) cacheTranslation(key, result.text);
+          return result;
+        })
+        .finally(() => {
+          if (pendingTranslations.get(key) === pending) pendingTranslations.delete(key);
+        });
+      pendingTranslations.set(key, pending);
+    }
+    const result = await pending;
     // If the user dismissed the in-progress block while we waited, don't resurrect it.
-    if (placeholder && !placeholder.parentElement) return;
+    if (messageOperations.get(message) !== operation || (placeholder && !placeholder.parentElement)) return;
     translatedMessages.add(getMessageId(message));
     renderUnitTranslation(message, unit, result.text);
   } catch (error) {
-    if (placeholder && !placeholder.parentElement) return;
+    if (messageOperations.get(message) !== operation || (placeholder && !placeholder.parentElement)) return;
     renderUnitTranslation(message, unit, publicError(error), { isError: true });
   }
 }
@@ -1678,6 +918,8 @@ function cacheTranslation(key, text) {
 // stay (they're rendered); only the stored entries are cleared, so future re-views
 // will re-translate.
 async function clearTranslationCache() {
+  translationCacheGeneration += 1;
+  pendingTranslations.clear();
   translationCache.clear();
   if (persistCacheTimer) {
     clearTimeout(persistCacheTimer);
@@ -1689,11 +931,8 @@ async function clearTranslationCache() {
 }
 
 // ---- Auto-translate ------------------------------------------------------------
-// A single global setting (设置页「自动翻译新消息」). It never translates retroactively:
-// the first time it runs in a channel it pins a baseline snowflake, and only messages
-// newer than that baseline are translated — so scrolling up through history, and the
-// existing backlog when you open a channel, are left untouched. The baseline is kept
-// per channel in memory so each channel only auto-translates its own new arrivals.
+// Use the enabling/channel-entry time, never the newest currently visible message:
+// scrolling through history must not turn a newer page of history into new arrivals.
 
 function visibleMessages() {
   return Array.from(document.querySelectorAll("[id^='chat-messages-'], [data-list-item-id*='chat-messages']"));
@@ -1708,6 +947,7 @@ function syncCurrentChannel() {
   const id = getCurrentChannelId();
   if (id === currentChannelId) return;
   currentChannelId = id;
+  if (id && autoTranslateEnabled()) autoTranslateBaseline.set(id, Date.now());
   // Drop queued auto-translate work for the channel we just left — no sense spending
   // API calls translating messages that are no longer on screen. In-flight requests
   // finish on their own; only the not-yet-started queue is cleared.
@@ -1721,23 +961,9 @@ function messageSnowflake(message) {
   return match ? match[1] : "";
 }
 
-function snowflakeGreater(a, b) {
-  if (!a) return false;
-  if (!b) return true;
-  if (a.length !== b.length) return a.length > b.length;
-  return a > b;
-}
-
-function currentMaxSnowflake(channelId, messages = visibleMessages()) {
-  let max = "";
-  for (const message of messages) {
-    // Only this channel's messages — during a channel switch the previous channel's
-    // rows can briefly linger and would otherwise poison the baseline.
-    if (channelId && getMessageId(message).indexOf(channelId) === -1) continue;
-    const snowflake = messageSnowflake(message);
-    if (snowflake && snowflakeGreater(snowflake, max)) max = snowflake;
-  }
-  return max;
+function snowflakeTimestamp(snowflake) {
+  // Discord timestamp: https://docs.discord.com/developers/reference#snowflakes
+  return snowflake ? Number(BigInt(snowflake) >> 22n) + 1420070400000 : 0;
 }
 
 function autoTranslateEnabled() {
@@ -1747,7 +973,12 @@ function autoTranslateEnabled() {
 // Called after settings save: when auto-translate is turned off, forget the baselines
 // so re-enabling later starts fresh from "now" instead of replaying a backlog.
 function applyAutoTranslateSettings() {
-  if (autoTranslateEnabled()) return;
+  if (autoTranslateEnabled()) {
+    if (currentChannelId && !autoTranslateBaseline.has(currentChannelId)) {
+      autoTranslateBaseline.set(currentChannelId, Date.now());
+    }
+    return;
+  }
   autoTranslateBaseline.clear();
   autoHandledMessages.clear();
   autoTranslateQueue = [];
@@ -1759,31 +990,19 @@ function shouldSkipSameLanguage(text) {
 }
 
 function runAutoTranslate(messages = visibleMessages()) {
+  applyAutoTranslateSettings();
   if (!autoTranslateEnabled()) return;
   const channelId = currentChannelId;
   if (!channelId) return;
 
-  // First run in this channel: the current conversation is the baseline. Nothing is
-  // translated this tick; only messages newer than now get picked up afterwards.
-  if (!autoTranslateBaseline.has(channelId)) {
-    const baseline = currentMaxSnowflake(channelId, messages);
-    // Wait until the channel's messages have actually rendered before pinning the
-    // baseline. An empty baseline would later let the entire backlog translate
-    // retroactively — the one thing auto-translate must never do.
-    if (!baseline) return;
-    autoTranslateBaseline.set(channelId, baseline);
-    return;
-  }
-
   const threshold = autoTranslateBaseline.get(channelId);
-  if (!threshold) return;
   for (const message of messages) {
     const id = getMessageId(message);
     if (!id || autoHandledMessages.has(id)) continue;
     // Belongs to this channel and is newer than the baseline.
     if (id.indexOf(channelId) === -1) continue;
     const snowflake = messageSnowflake(message);
-    if (!snowflake || !snowflakeGreater(snowflake, threshold)) continue;
+    if (!snowflake || snowflakeTimestamp(snowflake) <= threshold) continue;
     if (dismissedTranslations.has(id)) continue;
     if (findAnyTranslationBlock(message)) {
       autoHandledMessages.add(id);
@@ -1818,11 +1037,8 @@ function pumpAutoTranslateQueue() {
   }
 }
 
-async function autoTranslateMessage(message) {
-  for (const unit of getMessageUnits(message)) {
-    if (shouldSkipSameLanguage(unit.text)) continue;
-    await translateUnit(message, unit);
-  }
+function autoTranslateMessage(message) {
+  return translateMessage(message, true);
 }
 
 function findMessage(target) {
@@ -1881,13 +1097,12 @@ function getMessageId(message) {
   return message.getAttribute("id") || message.getAttribute("data-list-item-id") || "";
 }
 
-// Key the cache on the text + provider/model/language/style only — NOT the message id
-// or unit kind, neither of which changes the translation. This way identical text
-// (the same meme, emote word, or catchphrase from any message) hits the cache after
-// the first translation, instead of re-calling the model for every message instance.
+// Share results across messages only when the effective model and actual prompts match.
 function getUnitCacheKey(unit) {
-  const customPromptKey = settings.translationStyle === "custom" ? hashText(settings.customPrompt || "") : "";
-  return `${settings.model.provider}:${settings.model.modelId}:${settings.model.targetLanguage}:${settings.translationStyle}:${customPromptKey}:${hashText(unit.text)}`;
+  return createHash("sha256").update(JSON.stringify({
+    model: resolveModelConfig(settings.model),
+    messages: buildTranslationMessages({ text: unit.text, direction: "read", settings })
+  })).digest("hex");
 }
 
 function findUnitBlock(message, kind) {
@@ -1980,10 +1195,13 @@ const STYLE_MARKER_BAND = "linear-gradient(transparent 54%, color-mix(in srgb, c
 function translationPreviewStyle(style, isError) {
   const emphasis = style.emphasis || "none";
   const backgroundOn = style.background !== false;
+  const backgroundColor = style.backgroundColor === "auto"
+    ? "var(--background-surface-high, var(--background-secondary))" : style.backgroundColor;
   return {
-    backgroundColor: backgroundOn ? style.backgroundColor : "transparent",
+    backgroundColor: backgroundOn ? backgroundColor : "transparent",
     backgroundImage: emphasis === "marker" ? STYLE_MARKER_BAND : "none",
-    color: isError ? "#ffb3b8" : style.textColor,
+    color: isError ? "var(--text-feedback-critical, var(--text-danger))"
+      : style.textColor === "auto" ? automaticTextColor(style) : style.textColor,
     opacity: emphasis === "light" ? "0.72" : "1",
     fontWeight: emphasis === "bold" ? "700" : "400",
     // No background → no bubble: drop the card padding/border/shadow and sit the
@@ -1998,6 +1216,17 @@ function translationPreviewStyle(style, isError) {
     textDecorationLine: emphasisDecorationLine(emphasis),
     textDecorationStyle: emphasis === "wavy" ? "wavy" : "solid"
   };
+}
+
+function automaticTextColor(style) {
+  const color = style.background !== false && /^#[0-9a-f]{6}$/i.test(style.backgroundColor || "")
+    ? style.backgroundColor.slice(1) : "";
+  if (!color) return "var(--text-default, var(--text-normal))";
+  const [r, g, b] = color.match(/../g).map(hex => {
+    const channel = parseInt(hex, 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return r * 0.2126 + g * 0.7152 + b * 0.0722 > 0.179 ? "#111827" : "#f2f3f5";
 }
 
 function emphasisDecorationLine(emphasis) {
@@ -2032,7 +1261,11 @@ function ensureSendBox() {
   applyComposerBackground(box, editor);
   applySendBoxOpacity(box);
   const status = box.querySelector("span");
-  if (status && !box.querySelector("input:disabled")) status.textContent = enterHint();
+  if (status && status.textContent === status.dataset.dtmHint) {
+    const hint = enterHint();
+    if (status.textContent !== hint) status.textContent = hint;
+    status.dataset.dtmHint = hint;
+  }
 }
 
 function applySendBoxOpacity(box) {
@@ -2074,32 +1307,49 @@ function createSendBox() {
 
   const status = document.createElement("span");
   status.textContent = enterHint();
+  status.dataset.dtmHint = status.textContent;
+  let statusTimer = 0;
 
   input.addEventListener("keydown", async event => {
-    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key !== "Enter") return;
+    event.stopPropagation();
+    if (event.isComposing || event.keyCode === 229 || input.readOnly ||
+        event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
     event.preventDefault();
 
     const text = input.value.trim();
     if (!text) return;
+    const channelId = getCurrentChannelId();
+    const editor = findDiscordEditor();
+    const send = settings.sendTranslation.enterToSend;
+    if (!editor) return;
+    const current = () => box.isConnected && editor.isConnected &&
+      channelId === getCurrentChannelId() && editor === findDiscordEditor();
 
-    input.disabled = true;
+    input.readOnly = true;
+    clearTimeout(statusTimer);
+    delete status.dataset.error;
     status.textContent = "正在翻译...";
+    let id;
 
     try {
+      id = await nativeApi.beginSend(send);
+      if (!current()) throw new Error("频道或输入框已切换，原文已保留，请重新翻译。");
       const result = await nativeApi.translate({ direction: "send", text });
+      if (!current()) throw new Error("频道或输入框已切换，原文已保留，请重新翻译。");
+      const outcome = await nativeApi.insertAndSend({ id, text: result.text });
+      if (!outcome || !outcome.ok) throw new Error(outcome?.error || "未能填入 Discord 输入框，原文已保留。");
       input.value = "";
-      const currentEditor = findDiscordEditor();
-      if (!currentEditor) throw new Error("未找到 Discord 原生输入框，请切换频道后重试。");
-      currentEditor.focus();
-      await wait(60);
-      const outcome = await nativeApi.insertAndSend(result.text);
-      status.textContent = outcome && outcome.sent === false ? "已填入输入框" : "已发送";
-      setTimeout(() => { status.textContent = enterHint(); }, 1200);
+      status.textContent = outcome.sent === false ? "已填入输入框" : "已提交发送";
+      statusTimer = setTimeout(() => { status.textContent = enterHint(); status.dataset.dtmHint = status.textContent; }, 1200);
+      if (statusTimer && typeof statusTimer.unref === "function") statusTimer.unref();
     } catch (error) {
+      status.dataset.error = "true";
       status.textContent = publicError(error);
     } finally {
-      input.disabled = false;
-      input.focus();
+      if (id != null) await nativeApi.cancelSend(id).catch(error => diagnosticLog(publicError(error)));
+      input.readOnly = false;
+      if (current() && send) input.focus();
     }
   });
 
@@ -2347,7 +1597,17 @@ function button(label, variant) {
   return host;
 }
 
+function disposeControls(node) {
+  const ids = Array.from(node.querySelectorAll("[data-dtm-control-id]")).map(host => {
+    host.dataset.dtmNativeReactMounted = "disposed";
+    mainWorldControlCallbacks.delete(host.dataset.dtmControlId);
+    return host.dataset.dtmControlId;
+  });
+  if (ids.length) sendMainWorldMessage("dtm:unmount-controls", { ids });
+}
+
 function clearChildren(node) {
+  disposeControls(node);
   if (typeof node.replaceChildren === "function") {
     node.replaceChildren();
     return;
@@ -2402,6 +1662,8 @@ function requestMainWorldControl(host, spec) {
     nativeControlId += 1;
     id = `dtm-control-${nativeControlId}`;
   }
+  if (host.dataset.dtmNativeReactMounted === "disposed") return false;
+  host.__dtmControlSpec = spec;
   host.dataset.dtmControlId = id;
   host.dataset.dtmNativeReactMounted = "pending";
   host.dataset.dtmControlMountVersion = String(Number(host.dataset.dtmControlMountVersion || 0) + 1);
@@ -2448,6 +1710,13 @@ function installMainWorldControlEvents() {
   if (mainWorldControlEventsInstalled || typeof window === "undefined") return;
   mainWorldControlEventsInstalled = true;
 
+  window.addEventListener("dtm:settings-open", event => {
+    if (shouldHandleMainWorldMessage(event.detail)) openSettingsPanel();
+  });
+  window.addEventListener("dtm:settings-close", event => {
+    if (!shouldHandleMainWorldMessage(event.detail)) return;
+    closeSettingsPanel();
+  });
   window.addEventListener("dtm:control-change", event => {
     const detail = event.detail || {};
     if (!shouldHandleMainWorldMessage(detail)) return;
@@ -2464,6 +1733,16 @@ function installMainWorldControlEvents() {
   window.addEventListener("message", event => {
     const data = event.data || {};
     if (event.source !== window || data.source !== "dtm") return;
+    if (data.type === "dtm:settings-open") {
+      if (shouldHandleMainWorldMessage(data.detail)) openSettingsPanel();
+      return;
+    }
+    if (data.type === "dtm:settings-close") {
+      if (shouldHandleMainWorldMessage(data.detail)) {
+        closeSettingsPanel();
+      }
+      return;
+    }
     if (data.type === "dtm:control-change") {
       const detail = data.detail || {};
       if (!shouldHandleMainWorldMessage(detail)) return;
@@ -2501,7 +1780,7 @@ function translationStylePreview(style) {
     mountDiscordReactControl(host, {
       kind: "translation-preview",
       name: "预览",
-      style: currentStyle
+      style: translationPreviewStyle(currentStyle, false)
     });
   }
 
@@ -2523,28 +1802,12 @@ function refreshStylePreview(wrapper, style) {
   applyTranslationStyleObject(block, style, false);
 }
 
-function section(title, children, sectionKey) {
-  const wrapper = div(DISCORD_UI.settingCard);
-  wrapper.dataset.dtmNativeSection = "true";
-  if (sectionKey) {
-    wrapper.id = settingsSectionId(sectionKey);
-    wrapper.dataset.dtmSectionKey = sectionKey;
-  }
-
-  const headingOuter = stack("headingOuter");
-  const headingInner = stack("headingInner");
-  const heading = document.createElement("h2");
-  heading.className = DISCORD_UI.sectionHeading;
-  heading.textContent = title;
-  headingInner.appendChild(heading);
-  headingOuter.appendChild(headingInner);
-
-  const divider = div(DISCORD_UI.divider);
-  const rows = stack("rows");
+function section(_title, children, sectionKey) {
+  const rows = div(DISCORD_UI.stack);
+  rows.id = settingsSectionId(sectionKey);
+  applyDiscordStackLayout(rows, DISCORD_STACK_LAYOUTS.rows);
   for (const child of children) rows.appendChild(settingRow(child));
-
-  wrapper.append(headingOuter, rows, divider);
-  return wrapper;
+  return rows;
 }
 
 function settingRow(child) {
@@ -2676,7 +1939,11 @@ function colorSwatchField(name, value, options, onChange) {
     buttonNode.title = option.label;
     buttonNode.setAttribute("aria-label", `${name}：${option.label}`);
     buttonNode.dataset.dtmColorValue = option.value;
-    buttonNode.style.background = option.value;
+    buttonNode.style.background = option.value === "auto" ? "var(--background-surface-high, var(--background-secondary))" : option.value;
+    if (option.value === "auto") {
+      buttonNode.textContent = "A";
+      buttonNode.style.color = "var(--text-default, var(--text-normal))";
+    }
     buttonNode.addEventListener("click", () => {
       setSelected(option.value);
       onChange(option.value);
@@ -2728,14 +1995,6 @@ function toggleRow(name, checked, onChange) {
   return host;
 }
 
-function hashText(text) {
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-  }
-  return String(hash);
-}
-
 function publicError(error) {
   let message = error && error.message ? error.message : String(error);
   message = message
@@ -2749,10 +2008,6 @@ function publicError(error) {
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
     .replace(/([?&]key=)[^&\s]+/g, "$1[redacted]")
     .replace(/x-api-key\s*[:=]\s*[A-Za-z0-9._~+/=-]+/gi, "x-api-key: [redacted]");
-}
-
-function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 module.exports = { start };
@@ -2773,7 +2028,18 @@ function setRuntimeForTests(runtime) {
   if (runtime && runtime.settings) settings = normalizeSettings(runtime.settings);
   if (runtime && runtime.providerApiKeyStatus) providerApiKeyStatus = { ...runtime.providerApiKeyStatus };
   if (runtime && Object.prototype.hasOwnProperty.call(runtime, "nativeError")) nativeError = String(runtime.nativeError || "");
+  settingsPageOpen = false;
+  settingsPageGeneration += 1;
+  settingsSections.clear();
+  mainWorldControlCallbacks.clear();
+  handledMainWorldMessageIds.clear();
+  mainWorldControlEventsInstalled = false;
   translationCache = new Map();
+  translationCacheGeneration += 1;
+  pendingTranslations = new Map();
+  messageOperations = new WeakMap();
+  if (persistCacheTimer) clearTimeout(persistCacheTimer);
+  persistCacheTimer = 0;
   dismissedTranslations = new Set();
   translatedMessages = new Set();
   currentChannelId = runtime && runtime.channelId ? String(runtime.channelId) : "";
@@ -2785,6 +2051,11 @@ function setRuntimeForTests(runtime) {
 
 function resetRuntimeForTests() {
   if (!originalTestRuntime) return;
+  translationCacheGeneration += 1;
+  pendingTranslations.clear();
+  messageOperations = new WeakMap();
+  if (persistCacheTimer) clearTimeout(persistCacheTimer);
+  persistCacheTimer = 0;
   nativeApi = originalTestRuntime.nativeApi;
   settings = originalTestRuntime.settings;
   providerApiKeyStatus = originalTestRuntime.providerApiKeyStatus;
@@ -2794,41 +2065,42 @@ function resetRuntimeForTests() {
 }
 
 module.exports.__test = {
-  SETTINGS_BUTTON_ID,
-  SETTINGS_PANEL_ID,
+  openSettingsPanel,
+  closeSettingsPanel,
+  clearChildren,
+  createSendBox,
   SETTINGS_LABEL,
   apiKeyPlaceholder,
   apiKeyValueForRequest,
   button,
   ensureSendBox,
-  ensureSettingsEntry,
   inputField,
   injectBaseStyles,
   languageSelectField,
-  markSettingsEntryActive,
   modelComboBoxHostFor,
-  mountSettingsPanel,
-  onDocumentClick,
   onMessageDoubleClick,
   publicError,
   providerOptionsWithStatus,
-  clearSettingsEntryActive,
-  restoreSettingsContent,
   resetRuntimeForTests,
   runDomMaintenance,
   section,
   setRuntimeForTests,
   showNativeToast,
-  syncSettingsSubnavToScroll,
   translateMessage,
   translationPreviewStyle,
   toggleRow,
   applyAutoTranslateSettings,
+  autoTranslateMessage,
+  clearTranslationCache,
+  getSettingsForTests: () => settings,
+  getUnitCacheKey,
+  loadPersistedCache,
   getCurrentChannelId,
   messageSnowflake,
   runAutoTranslate,
   shouldSkipSameLanguage,
-  snowflakeGreater,
+  snowflakeTimestamp,
+  syncCurrentChannel,
   restoreVisibleTranslations,
   refreshTranslationStyles
 };

@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { getApiKeyStatus, insertAndSend, listModels, patchBrowserWindowOptions, providerHttpError, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
+const { getApiKeyStatus, listModels, patchBrowserWindowOptions, providerHttpError, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
 const { normalizeSettings } = require("../src/shared/settings");
 
 test("patchBrowserWindowOptions replaces Discord preload and preserves the original path", () => {
@@ -48,43 +48,6 @@ test("hosted providers reject a missing API key before making a request", async 
     listModels({ settings: normalizeSettings({ model: { provider: "openai" } }), apiKey: "" }),
     /请先填写并保存 API Key/
   );
-});
-
-test("insertAndSend obeys the persisted auto-send preference", async () => {
-  const fs = require("node:fs");
-  const os = require("node:os");
-  const path = require("node:path");
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-send-test-"));
-  const store = path.join(temp, "discord-translator-mod");
-  fs.mkdirSync(store, { recursive: true });
-  setElectronForTests({ app: { getPath: () => temp } });
-
-  try {
-    const events = [];
-    const webContents = {
-      insertText: async text => events.push(["text", text]),
-      sendInputEvent: event => events.push(["key", event.type, event.keyCode])
-    };
-
-    fs.writeFileSync(path.join(store, "settings.json"), JSON.stringify({
-      sendTranslation: { enabled: true, enterToSend: false }
-    }));
-    assert.deepEqual(await insertAndSend(webContents, " translated "), { ok: true, sent: false });
-    assert.deepEqual(events, [["text", "translated"]]);
-
-    events.length = 0;
-    fs.writeFileSync(path.join(store, "settings.json"), JSON.stringify({
-      sendTranslation: { enabled: true, enterToSend: true }
-    }));
-    assert.deepEqual(await insertAndSend(webContents, "translated"), { ok: true, sent: true });
-    assert.deepEqual(events, [
-      ["text", "translated"],
-      ["key", "keyDown", "Enter"],
-      ["key", "keyUp", "Enter"]
-    ]);
-  } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
-  }
 });
 
 test("testConnection uses staged settings and api key without reading the keychain", async () => {
@@ -386,7 +349,7 @@ test("API keys are encrypted per provider via safeStorage and never stored in pl
   }
 });
 
-test("API key storage falls back to local wrapping when no OS keyring is available", () => {
+test("API key storage rejects unavailable encryption without replacing saved keys", () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -396,18 +359,79 @@ test("API key storage falls back to local wrapping when no OS keyring is availab
   setElectronForTests({ app: { getPath: () => tmp }, safeStorage: { isEncryptionAvailable: () => false } });
 
   try {
-    setApiKey({ provider: "deepseek", apiKey: "sk-deepseek-123456" });
-    const status = getApiKeyStatus();
-    assert.equal(status.deepseek, true);
-    assert.equal(status.previews.deepseek, "sk-d…3456");
-
-    const raw = fs.readFileSync(path.join(tmp, "discord-translator-mod", "api-keys.json"), "utf8");
-    assert.equal(raw.includes("sk-deepseek-123456"), false);
+    const file = path.join(tmp, "discord-translator-mod", "api-keys.json");
+    fs.mkdirSync(path.dirname(file));
+    const original = JSON.stringify({ openai: { enc: "safeStorage", value: "existing-encrypted-key" } });
+    fs.writeFileSync(file, original);
+    assert.throws(() => setApiKey({ provider: "deepseek", apiKey: "sk-test-only" }), /系统加密.*不可用/);
+    assert.equal(fs.readFileSync(file, "utf8"), original);
   } finally {
     setElectronForTests(null);
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("local models remain usable while OS encryption is unavailable for a legacy key", async t => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-local-key-"));
+  const file = path.join(tmp, "discord-translator-mod", "api-keys.json");
+  const previousFetch = global.fetch;
+  fs.mkdirSync(path.dirname(file));
+  const original = JSON.stringify({ openai: { enc: "plain", value: Buffer.from("test-only-key").toString("base64") } });
+  fs.writeFileSync(file, original);
+  t.after(() => { global.fetch = previousFetch; setElectronForTests(null); fs.rmSync(tmp, { recursive: true, force: true }); });
+  setElectronForTests({ app: { getPath: () => tmp }, safeStorage: { isEncryptionAvailable: () => false } });
+  global.fetch = async () => ({ ok: true, text: async () => JSON.stringify({ data: [{ id: "local-test" }] }) });
+  const result = await listModels({ settings: normalizeSettings({ model: { provider: "ollama" } }) });
+  assert.equal(result.models[0].value, "local-test");
+  assert.equal(fs.readFileSync(file, "utf8"), original);
+  assert.throws(() => setApiKey({ provider: "custom", apiKey: "new-test-key" }), /系统加密.*不可用/);
+});
+
+test("legacy wrapped API keys are migrated to OS encryption when read", () => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-key-migration-"));
+  const file = path.join(tmp, "discord-translator-mod", "api-keys.json");
+  fs.mkdirSync(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify({ custom: { enc: "plain", value: Buffer.from("test-only-key").toString("base64") } }));
+  setElectronForTests({
+    app: { getPath: () => tmp },
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: value => Buffer.from("encrypted:" + value),
+      decryptString: value => value.toString().replace(/^encrypted:/, "")
+    }
+  });
+  try {
+    assert.equal(getApiKeyStatus().custom, true);
+    const entry = JSON.parse(fs.readFileSync(file, "utf8")).custom;
+    assert.equal(entry.enc, "safeStorage");
+    assert.notEqual(entry.value, Buffer.from("test-only-key").toString("base64"));
+  } finally {
+    setElectronForTests(null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+for (const operation of ["translate", "models"]) {
+  for (const failure of ["timeout", "network"]) {
+    test(`${operation} reports ${failure} while reading the response body in Chinese`, async t => {
+      const { translateWithSettings } = require("../src/mod/main");
+      t.mock.method(global, "fetch", async () => ({
+        ok: true,
+        text: async () => {
+          if (failure === "timeout") throw new DOMException("The operation was aborted", "AbortError");
+          throw new TypeError("terminated", { cause: { code: "ECONNRESET" } });
+        }
+      }));
+      const settings = normalizeSettings({ model: { provider: "openai" } });
+      const promise = operation === "translate"
+        ? translateWithSettings({ text: "hello" }, settings, "test-only-key")
+        : listModels({ settings, apiKey: "test-only-key" });
+      await assert.rejects(promise, failure === "timeout" ? /超时/ : /网络连接失败.*重置/);
+    });
+  }
+}
 
 test("openSettingsFile opens the settings directory instead of the JSON file", () => {
   const fs = require("node:fs");

@@ -62,8 +62,8 @@ for people who only want translation.
 | Send translation | A movable, resizable input above Discord's composer translates your text before sending. Disable auto-send when you want to review the result first. |
 | Auto-translate | Translates only messages that arrive after you enable it. It never translates the channel backlog and skips messages already in your target language. |
 | Translation styles | Natural, casual, literal, concise, gaming, formal, or your own custom prompt. |
-| Appearance | Put translations above or below the original, hide the background, and adjust colors, fonts, emphasis, and input opacity. |
-| Persistent cache | Reuses matching translations to reduce repeated requests, latency, and model cost. |
+| Appearance | Put translations above or below the original, hide the background, and adjust colors, fonts, emphasis, and input opacity. Automatic colors follow Discord's theme. |
+| Persistent cache | Reuses translations for matching text, model, and prompt. Concurrent identical requests are combined to reduce latency and model cost. |
 | Native proxy support | Provider requests use Electron's network stack and follow the system or Discord proxy. |
 
 ### Supported providers
@@ -118,6 +118,10 @@ macOS. Babel will then appear under **Discord Settings → Babel**.
 For outgoing text, enable **Send Translation** in Babel settings. For automatic incoming
 translation, enable **Auto-translate new messages**; only new messages are affected.
 
+Send translation does not overwrite an existing Discord draft. Switching channels or
+changing the draft or reply target during translation cancels that send and keeps your
+original text in the translation input.
+
 ## 🔄 Updating
 
 - Open **Discord Settings → Babel**, scroll to the footer, and click **Check for updates**.
@@ -132,7 +136,8 @@ translation, enable **Auto-translate new messages**; only new messages are affec
   privacy policy and use one you trust.
 - API keys are encrypted locally with Electron `safeStorage` (Keychain on macOS, DPAPI
   on Windows). They are only sent to the provider you configured.
-- Babel never reads your Discord token and does not call Discord's private APIs.
+- Babel never reads your Discord token or calls Discord's message endpoints directly;
+  translated messages are sent through Discord's native composer.
 - Uninstalling Babel removes its settings, encrypted API keys, and translation cache.
 
 ## ❓ FAQ

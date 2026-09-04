@@ -1,7 +1,7 @@
 "use strict";
 
 // Keep in sync with package.json "version". Used for the GitHub update check.
-const BABEL_VERSION = "0.1.5";
+const BABEL_VERSION = "0.1.6";
 
 const DEFAULT_TRANSLATION_PROMPT = [
   "你是 Discord 聊天翻译器。",
@@ -204,8 +204,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     textDecoration: "none",
     background: true,
     emphasis: "none",
-    backgroundColor: "#2b2d31",
-    textColor: "#dbdee1",
+    backgroundColor: "auto",
+    textColor: "auto",
     borderRadius: 8,
     fontFamily: "var(--font-primary)",
     fontSize: 14

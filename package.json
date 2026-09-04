@@ -1,6 +1,6 @@
 {
   "name": "babel",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Babel — a lightweight Discord translator plugin (双击即译 / 输入即译) for macOS and Windows.",
   "author": "麦格 (Maige) (https://x.com/unflwMaige)",
@@ -12,8 +12,5 @@
     "install:mod": "node scripts/install.js",
     "uninstall:mod": "node scripts/uninstall.js",
     "verify": "npm test && npm run build && node scripts/verify-dist.js"
-  },
-  "devDependencies": {
-    "@electron/asar": "^4.0.1"
   }
 }
