@@ -25,8 +25,8 @@
 
 ## 📸 Preview
 
-These screenshots show the verified 0.1.5 interface. The 0.1.6 local candidate is under test; screenshots will be updated after real-client verification. The provider details are example
-values; **Babel does not include an API key**.
+These screenshots are from 0.1.5 and illustrate the basic workflow. Settings have been
+rearranged in 0.1.6; the current interface may differ. **Bring your own model service and API key.**
 
 <table>
   <tr>
@@ -47,7 +47,7 @@ BetterDiscord and Vencord are great when you want a complete mod framework. Babe
 for people who only want translation.
 
 - **Standalone and focused**: one translator, one small runtime, no plugin framework.
-- **Use the AI you already trust**: cloud providers, custom OpenAI-compatible APIs,
+- **Use the AI you already trust**: cloud providers, custom APIs,
   Ollama, or LM Studio.
 - **Feels like Discord**: settings reuse Discord's native controls and follow the active
   theme.
@@ -58,23 +58,28 @@ for people who only want translation.
 
 | Feature | What it does |
 | --- | --- |
-| Double-click translation | Translates a message in place. Double-click again to hide it. Replies translate the quoted preview and reply body separately. |
-| Send translation | A movable, resizable input above Discord's composer translates your text before sending. Disable auto-send when you want to review the result first. |
-| Auto-translate | Translates only messages that arrive after you enable it. It never translates the channel backlog and skips messages already in your target language. |
-| Translation styles | Natural, casual, literal, concise, gaming, formal, or your own custom prompt. |
-| Appearance | Put translations above or below the original, choose emphasis, background color, translation color, translation font, and translation-box opacity. Colors have names; Auto follows Discord's theme. |
-| Translation cache | Translations are always stored locally. Matching text, model, and prompt are reused, and identical concurrent requests are combined. Clear the cache from settings; usage is not shown. |
-| Interface language | The plugin and native managers support English, Simplified Chinese, Traditional Chinese, and Japanese, and always follow the system language. |
-| Native proxy support | Provider requests use Electron's network stack and follow the system or Discord proxy. |
+| Double-click translation | Shows a translation alongside the original. Double-click again to hide it. Quoted previews and reply bodies are translated separately. |
+| Translation input box | Translate outgoing text above Discord's composer in a movable, resizable input. Turn off Send on Enter to review the translation in the native composer before sending. |
+| Auto-translate new messages | Handles only messages received after you enable it. Skips your target language and leaves channel history alone. |
+| Translation styles | Natural, casual, paraphrased, literal, concise, gaming, formal, or your own translation prompt. |
+| Appearance | Adjust placement, style, font, emphasis, and colors. Colors have names and previews; Auto follows Discord's theme. |
+| Local cache | Saves translations automatically and reuses matching results. Identical concurrent requests are combined to reduce duplicate calls. Clear the cache whenever you need to. |
+| Interface language | The plugin and installers follow your system language: English, Simplified Chinese, Traditional Chinese, or Japanese. |
+| System proxy | Translation requests use Discord's Electron network stack and follow the system or Discord proxy settings. |
 
-### Supported providers
+### Supported providers and APIs
 
 | Cloud | Local and custom |
 | --- | --- |
-| OpenAI, Google Gemini, Claude, DeepSeek, Z.AI, Kimi, OpenRouter | Ollama, LM Studio, and OpenAI-compatible endpoints |
+| OpenAI, Google Gemini, Claude, DeepSeek, Z.AI, Kimi, OpenRouter | Ollama, LM Studio, and custom endpoints supporting the formats below |
 
-Cloud providers require **your own API key and quota**. Ollama and LM Studio can run
-without a cloud API key.
+Custom endpoints support **Chat Completions, Responses, and Messages**. OpenAI supports
+Chat Completions or Responses. Choose the format documented by your provider; there is
+no need to tune generation parameters such as temperature.
+
+Cloud providers require **your own API key and quota**. Ollama and LM Studio usually do
+not need a cloud API key. Model availability depends on the model and API format your
+service actually supports.
 
 ## 📦 Install
 
@@ -87,56 +92,56 @@ Download the latest release:
 
 ### Windows
 
-1. Run **`Babel-Installer.exe`**.
-2. The installer normally finds Discord automatically. If Discord was moved, paste the
-   Discord folder, an `app-*` folder, or the full `Discord.exe` path.
-3. Click **安装**.
+1. Download and run **`Babel-Installer.exe`**.
+2. Check the detected Discord path. If Discord was moved, enter its installation folder,
+   an `app-*` folder, or the full path to `Discord.exe`.
+3. Click **Install / Update**. The installer closes the selected Discord instance before installing.
+4. After a successful installation, click **Restart Discord** to reopen Discord and close the installer.
 
-The current Windows build is for **64-bit Windows**. SmartScreen may warn because the
-open-source installer is not code-signed. Verify that it came from this repository's
-Releases page before choosing to run it.
+Supports **Windows x64**. The installer is unsigned, so SmartScreen may show a warning.
+Make sure your download came from this repository's Releases page.
 
 ### macOS
 
-1. Open **`Babel Manager.dmg`**.
-2. Run **Babel Manager** and click **Install**.
+1. Download and open **`Babel Manager.dmg`**.
+2. Open **Babel Manager**, check the target folder, and click **Install / Update**.
+3. After a successful installation, click **Restart Discord** to reopen Discord and close the manager.
 
-The current macOS build is for **Apple Silicon (M1 or newer)**.
+Supports **Apple Silicon (M1 or newer)**. The app is not notarized.
 
-If access to Discord data is denied, use **File → Choose Discord folder…** to
-select the data folder shown in the manager and retry. Install and uninstall stay
-disabled while the target is inaccessible.
+If access to Discord data is denied, use **File → Choose Discord folder…**, select the
+folder shown in the manager, and retry.
 
 ### Finish the installation
 
-On either platform, fully quit Discord and reopen it. Closing only the window is not
-enough: use **system tray → Quit Discord** on Windows or **Discord → Quit Discord** on
-macOS. Babel will then appear under **Discord Settings → Babel**.
+Open **Discord Settings → Babel** to configure the plugin. If automatic restart fails,
+follow the manager's instructions to fully quit Discord and reopen it. Closing only the
+window does not quit the app.
+
+The release includes **SHA256SUMS** to verify the integrity of your downloads.
 
 ## 🎮 How to use
 
-1. Open **Discord Settings → Babel**.
-2. Choose a provider and model, enter your own API key if needed, and click the shared **Save** button. Provider, model, key, and language edits are saved together; use **Discard changes** to abandon an unsaved draft.
-3. Pick the language and translation style you want.
-4. Double-click a message to translate it.
+1. Open **Discord Settings → Babel**. Under **Model**, choose a provider, enter your API key,
+   and select or enter a model.
+2. For a custom service, enter its API address and select the **API format** documented by the provider.
+3. Click **Test connection** to confirm the configuration can translate, then click **Save** at the bottom.
+4. Under **Translation**, choose your reading language, sending language, and translation style, then save.
+5. Double-click a message to see its translation in place.
 
-For outgoing text, enable **Translation input box** in Babel settings. For automatic incoming
-translation, enable **Auto-translate new messages**; only new messages are affected.
-Click **Save** to apply your changes.
+To translate outgoing text, enable **Translation input box**. Turn on **Send on Enter**
+to send the result directly, or turn it off to review the translation in Discord's native
+composer first. Press **Esc** during translation to cancel and keep your original text.
 
-Custom endpoint keys are isolated by the complete endpoint address. Remote HTTP
-requires explicit permission for that address; HTTPS is recommended. Check the key
-status after changing endpoints.
+Enable **Auto-translate new messages** to translate incoming messages automatically.
+Existing channel history is left alone.
 
-The translation cache is always stored locally. The Translation page only offers
-**Clear translation cache**. Success is a brief notice, and a failure shows an error.
-External configuration changes prompt you to reload or
-explicitly overwrite. Press **Esc** during send translation to cancel and keep the
-original text.
+The footer groups **Save, Discard changes, Open configuration folder, and Clear translation cache**.
+Caching is automatic. The interface follows your system language; reading and sending
+languages can be chosen separately.
 
-Send translation does not overwrite an existing Discord draft. Switching channels or
-changing the draft or reply target during translation cancels that send and keeps your
-original text in the translation input.
+Babel does not overwrite an existing Discord draft. Switching channels or changing the
+draft or reply target during translation cancels that send and keeps your original text.
 
 ## 🔄 Updating
 
@@ -144,14 +149,16 @@ original text in the translation input.
 - Download the new installer and run it again. It updates the existing installation in
   place; your settings are kept.
 - Discord itself may replace its desktop-core folder during an update. If Babel
-  disappears afterward, simply run the installer again.
+  disappears afterward, run the installer again and click **Restart Discord**.
 
 ## 🔐 Privacy
 
 - Text you translate is sent to the AI provider you selected. Review that provider's
   privacy policy and use one you trust.
-- API keys are encrypted locally with Electron `safeStorage` (Keychain on macOS, DPAPI
-  on Windows). They are only sent to the provider you configured.
+- API keys are encrypted locally using system storage capabilities: Keychain on macOS
+  and DPAPI on Windows. Custom endpoint keys are isolated by endpoint address; check
+  the key status after changing the address.
+- HTTPS is recommended. Remote HTTP requires explicit permission for the current address.
 - Babel never reads your Discord token or calls Discord's message endpoints directly;
   translated messages are sent through Discord's native composer.
 - Ordinary uninstall keeps settings, encrypted API keys, and translation cache. The explicit cleanup checkbox erases only the selected client’s data after the loader has been restored successfully.
@@ -162,7 +169,8 @@ original text in the translation input.
 <summary><strong>Why did Babel disappear after Discord updated?</strong></summary>
 
 Discord installs updates into a new versioned desktop-core folder. That replaces the
-hook Babel used. Run the latest installer again, then fully quit and reopen Discord.
+hook Babel used. Run the latest installer again and click **Restart Discord**. Babel does
+not keep a background process running to reinstall itself.
 
 </details>
 
@@ -185,11 +193,33 @@ more than a standalone translator, use one client mod at a time.
 </details>
 
 <details>
-<summary><strong>What does “fetch failed” or a timeout mean?</strong></summary>
+<summary><strong>Why does translation fail for a model that appears in the list?</strong></summary>
 
-The request did not complete normally. Check the provider URL, system proxy or VPN, DNS,
-and whether the model service is responding. A timeout means Babel cancelled a request
-that took too long; retrying is usually enough when it only happens occasionally.
+Listing models and generating a translation are separate requests. A listed model may
+not be supported by the service's generation endpoint. Check the model ID, API format,
+key permissions, and quota, then use **Test connection**.
+
+If you use a proxy or gateway, it must forward the selected API format correctly.
+Babel does not guess formats from model names or retry with different formats after an
+error. A client-side model selection cannot add missing support to a service.
+
+</details>
+
+<details>
+<summary><strong>What should I check when a request fails or times out?</strong></summary>
+
+Follow the error message to check the API address, key, quota, API format, and service
+status. For network errors, also check your system proxy or VPN. Retry an occasional
+timeout; for repeated failures, verify your configuration with **Test connection** first.
+
+</details>
+
+<details>
+<summary><strong>Does uninstalling remove my settings and API keys?</strong></summary>
+
+Ordinary uninstall keeps settings, encrypted API keys, and translations. Saved data is
+removed only when you explicitly select the cleanup option in the installer, and only
+for the selected Discord client.
 
 </details>
 
