@@ -36,7 +36,11 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
-      - run: npm test
+      # Bounded so a hanging test surfaces as a named timeout instead of a silent
+      # stall: node --test buffers each file's output until that file completes,
+      # so an unbounded hang hides all of that file's diagnostics. Same files and
+      # runner as `npm test`; nothing is skipped or force-exited.
+      - run: node --test --test-timeout=120000 test/*.test.js
       - run: node scripts/prepare-installer-payload.js
       - uses: actions/setup-go@v5
         with:

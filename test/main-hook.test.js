@@ -485,6 +485,33 @@ test("a damaged key file leaves settings readable and blocks key replacement", a
   }
 });
 
+test("setElectronForTests stops the previous runtime's file watching before fixtures are removed", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-watch-teardown-"));
+  fs.mkdirSync(path.join(tmp, "discord-translator-mod"));
+  setElectronForTests({ app: { getPath: () => tmp, once() {} }, safeStorage: { isEncryptionAvailable: () => false } });
+  let store;
+  try {
+    await getRuntime().ready;
+    store = getRuntime().settings;
+    assert.ok(store.watcher, "the runtime watches its settings directory");
+    assert.ok(store.watchHealth, "the runtime keeps its watch health check armed");
+  } finally {
+    setElectronForTests(null);
+  }
+  // Teardown closes every watcher and timer, so nothing keeps a handle on the
+  // fixture directory the tests remove immediately afterwards.
+  assert.equal(store.watcher, null);
+  assert.equal(store.watchHealth, null);
+  assert.equal(store.watchTimer, null);
+  // Closing a watch handle is asynchronous; let the loop finish it, then the
+  // watched fixture directory must be removable.
+  await new Promise((resolve) => setImmediate(resolve));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 for (const operation of ["translate", "models"]) {
   for (const failure of ["timeout", "network"]) {
     test(`${operation} reports ${failure} while reading the response body in Chinese`, async t => {

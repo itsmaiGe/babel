@@ -471,6 +471,10 @@ module.exports = { install, CHANNELS };
 function setElectronForTests(electron) {
   sessionSystemLocale = undefined; localeDiagnosticSent = false;
   runtime?.cache && clearTimeout(runtime.cache.timer);
+  // Tear down the outgoing runtime's file watching too: tests delete these
+  // fixture directories right after this call, and Windows refuses to remove a
+  // directory that still has a watch handle open.
+  runtime?.settings?.stopWatching();
   runtimeElectron = electron;
   runtime = null;
 }
