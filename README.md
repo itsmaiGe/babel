@@ -25,7 +25,7 @@
 
 ## 📸 界面预览
 
-下面是 Babel 在 Discord 里的真实设置界面。图中的平台信息仅用于展示，
+以下是真实运行的 0.1.5 设置截图；0.1.6 本地候选版本正在测试，界面截图将在实机验证后更新。图中的平台信息仅用于展示，
 **Babel 不会内置或公开任何 API Key**。
 
 <table>
@@ -35,8 +35,8 @@
       <img src="assets/screenshots/settings-overview.png" alt="Discord 中的 Babel 模型与消息翻译设置" />
     </td>
     <td width="50%" valign="top">
-      <p><strong>发送翻译与译文外观</strong></p>
-      <img src="assets/screenshots/settings-translation.png" alt="Discord 中的 Babel 发送翻译与译文外观设置" />
+      <p><strong>翻译与外观</strong></p>
+      <img src="assets/screenshots/settings-translation.png" alt="Discord 中的 Babel 翻译与外观设置" />
     </td>
   </tr>
 </table>
@@ -59,8 +59,9 @@ BetterDiscord 和 Vencord 很适合需要完整客户端模组框架的人。Bab
 | 发送翻译 | Discord 输入框上方提供可移动、可调整宽度的翻译输入框。关闭自动发送后，译文会先进入原生输入框等待确认。 |
 | 自动翻译 | 只翻译开启功能后出现的新消息，不会翻译频道历史记录，并自动跳过已经是目标语言的消息。 |
 | 翻译风格 | 支持自然、口语、意译、直译、简洁、游戏、正式和自定义提示词。 |
-| 译文外观 | 可以调整译文位置、背景、颜色、字体、强调样式和输入框透明度。颜色选择「自动」时跟随 Discord 主题。 |
-| 持久化缓存 | 相同内容、模型和提示词优先复用已有译文，同时翻译相同内容会合并请求，减少等待时间和模型费用。 |
+| 译文外观 | 可以调整译文位置、译文样式、背景色、译文颜色、译文字体、强调样式和翻译框不透明度。颜色显示名称；选择「自动」时跟随 Discord 主题。 |
+| 翻译缓存 | 译文始终保存在本地。相同内容、模型和提示词优先复用已有译文，同时翻译相同内容会合并请求。设置中可以清除缓存，不显示用量。 |
+| 界面语言 | 插件与原生安装器支持 English、简体中文、繁體中文和日本語，始终跟随系统语言。 |
 | 系统代理 | 翻译请求使用 Electron 网络能力，会跟随系统或 Discord 的代理设置。 |
 
 ### 支持的平台
@@ -98,6 +99,9 @@ SmartScreen 可能会弹出警告。请先确认文件来自本仓库 Releases �
 
 当前 macOS 安装器仅支持 **Apple Silicon（M1 及更新机型）**。
 
+如果安装器提示无法访问 Discord 数据，请用 **File → Choose Discord folder…**
+选择窗口中显示的 Discord 数据目录后重试。权限拒绝时，安装和卸载按钮会禁用。
+
 ### 安装完成后
 
 Windows 和 macOS 都需要**彻底退出 Discord 后重新打开**。只关闭窗口并不算退出：
@@ -107,12 +111,16 @@ Windows 请从系统托盘退出 Discord，macOS 请使用 **Discord → Quit Di
 ## 🎮 使用方法
 
 1. 打开 **Discord 设置 → Babel**。
-2. 选择 AI 平台和模型，需要 API Key 的平台请保存自己的 Key。
-3. 设置阅读目标语言、发送目标语言和翻译风格。
+2. 选择服务商和模型，填写自己的 API Key，然后点击共享的 **保存** 按钮。服务商、模型、密钥和语言修改一起保存；未保存时可选择 **放弃更改**。
+3. 设置阅读语言、发送语言和翻译风格。
 4. 双击一条消息即可翻译。
 
-需要翻译自己要发送的文字时，在设置里开启 **发送翻译输入框**。需要自动处理频道新消息时，
-开启 **自动翻译新消息**，它只会从开启之后开始工作。
+需要翻译自己要发送的文字时，在设置里开启 **输入翻译框**。需要自动处理频道新消息时，
+开启 **自动翻译新消息**，它只会从开启之后开始工作。所有修改需要点击 **保存**。
+
+自定义接口的密钥按完整接口地址隔离。远程 HTTP 接口需明确允许，许可只适用于当前地址；建议使用 HTTPS。更改接口后请检查密钥状态。
+
+翻译缓存始终保存在本地，**翻译** 页面只有 **清除翻译缓存**。清理成功只有短暂提示，失败时才显示错误。配置文件在外部改变时，页面会提示重新加载或明确覆盖。发送翻译期间按 **Esc** 可取消，原文会保留。
 
 发送翻译不会覆盖原生输入框里已有的草稿。翻译期间切换频道、修改草稿或回复对象时，
 本次发送会取消，翻译输入框里的原文会保留。
@@ -126,11 +134,11 @@ Windows 请从系统托盘退出 Discord，macOS 请使用 **Discord → Quit Di
 
 ## 🔐 隐私说明
 
-- 需要翻译的文字会发送给你选择的 AI 平台，请使用你信任的服务并了解其隐私政策。
+- 需要翻译的文字会发送给你选择的服务商，请使用你信任的服务并了解其隐私政策。
 - API Key 会通过 Electron `safeStorage` 在本机加密保存：macOS 使用 Keychain，
   Windows 使用 DPAPI。Key 只会发送给你配置的平台。
 - Babel 不会读取 Discord Token，也不会直接请求 Discord 的消息接口；发送译文使用原生输入框。
-- 卸载 Babel 时会删除设置、加密 API Key 和翻译缓存。
+- 普通卸载保留设置、加密 API Key 和翻译缓存。只有明确勾选清除所选客户端的数据，且入口恢复成功后，才会删除该数据目录。其他客户端的数据不会被删除。
 
 ## ❓ 常见问题
 
@@ -182,8 +190,12 @@ Babel 仍处于早期阶段，Discord 内部更新也可能带来兼容问题。
 npm ci
 npm test
 npm run install:mod   # 安装当前源码版本
-npm run uninstall:mod # 卸载 Babel 并清理本地数据
+npm run uninstall:mod # 卸载 Babel，保留本地数据
+npm run uninstall:mod -- --remove-profile-data # 明确清除所选客户端的数据
+npm run uninstall:mod -- --prune # 删除未被引用的载荷；确认 Discord 已关闭且没有安装器在运行
 ```
+
+开发者命令不会锁定目标。不要让它和 macOS 应用、Windows 安装器或其他开发者命令同时改同一份 Discord。重叠运行不受支持。若一次安装被打断，等其他操作结束后再执行一次即可修复。
 
 `npm run build` 会生成 macOS DMG，需要 Xcode Command Line Tools。
 Windows 安装器由 GitHub Actions 使用 `installer/` 中锁定的 Go 依赖构建。
@@ -193,7 +205,8 @@ node scripts/prepare-installer-payload.js
 cd installer
 go mod download
 go test ./internal/...
-go run github.com/akavel/rsrc@v0.10.2 -ico babel.ico -o rsrc.syso
+go run github.com/akavel/rsrc@v0.10.2 -ico babel.ico -manifest babel.manifest -o rsrc.syso
+$env:CGO_ENABLED="0"
 go build -ldflags "-H windowsgui -s -w" -o Babel-Installer.exe .
 ```
 
@@ -201,6 +214,6 @@ go build -ldflags "-H windowsgui -s -w" -o Babel-Installer.exe .
 
 ## 许可证
 
-MIT © [麦格](https://x.com/unflwMaige)
+MIT © [麦格](https://x.com/Samoye)
 
 ⭐ 如果 Babel 让 Discord 里的交流更轻松，欢迎给这个项目点一个 Star。

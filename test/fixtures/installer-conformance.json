@@ -1,0 +1,8 @@
+[
+  {"name":"ordinary uninstall keeps saved data and payload","format":"additive","removeData":false,"succeeds":true,"dataKept":true,"hookKept":false,"payloadKept":true},
+  {"name":"explicit erasure waits while Discord identity is unresolved","format":"additive","removeData":true,"succeeds":true,"dataKept":true,"hookKept":false,"payloadKept":true},
+  {"name":"legacy restore preserves another injector and the payload","format":"legacy","backup":true,"removeData":false,"succeeds":true,"dataKept":true,"hookKept":false,"payloadKept":true},
+  {"name":"failed legacy restore retains all recovery material","format":"legacy","backupDirectory":true,"removeData":true,"succeeds":false,"dataKept":true,"hookKept":true,"payloadKept":true},
+  {"name":"failed index read retains all recovery material","format":"additive","indexDirectory":true,"removeData":true,"succeeds":false,"dataKept":true,"hookKept":true,"payloadKept":true},
+  {"name":"repeated uninstall is successful and keeps data and payload","format":"plain","removeData":false,"succeeds":true,"dataKept":true,"hookKept":false,"payloadKept":true,"repeat":true}
+]

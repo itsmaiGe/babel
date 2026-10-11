@@ -1,0 +1,236 @@
+[
+  {
+    "preferences": [
+      "en-GB"
+    ],
+    "expectedJSGo": "en",
+    "expectedAppKit": "en",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "ja-JP"
+    ],
+    "expectedJSGo": "ja",
+    "expectedAppKit": "ja",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-CN"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "expectedAppKit": "zh-Hans",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-SG"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "expectedAppKit": "zh-Hans",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "expectedAppKit": "zh-Hans",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-TW"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-HK"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-MO"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-Hans-HK"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "expectedAppKit": "zh-Hans",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-Hant-CN"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "fr-FR",
+      "ja-JP"
+    ],
+    "expectedJSGo": "ja",
+    "expectedAppKit": "ja",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "fr-FR"
+    ],
+    "expectedJSGo": "en",
+    "expectedAppKit": "en",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "zh-Latn",
+      "ja-JP"
+    ],
+    "expectedJSGo": "ja",
+    "expectedAppKit": "ja",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "ja-Latn",
+      "en-US"
+    ],
+    "expectedJSGo": "en",
+    "expectedAppKit": "en",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "yue-HK",
+      "en-US"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "yue"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "yue-CN"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "expectedAppKit": "zh-Hans",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "yue-Hans"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "expectedAppKit": "zh-Hans",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "yue-Hant"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [
+      "yue-Latn",
+      "ja-JP"
+    ],
+    "expectedJSGo": "ja",
+    "expectedAppKit": "zh-Hant",
+    "measured": true
+  },
+  {
+    "preferences": [],
+    "expectedJSGo": "en",
+    "measured": false
+  },
+  {
+    "preferences": [
+      null,
+      1,
+      {},
+      "bad--tag",
+      "ja_JP"
+    ],
+    "expectedJSGo": "ja",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "ZH_hANT_cn_u_ca_chinese"
+    ],
+    "expectedJSGo": "zh-Hant",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "EN_latn_us_x_custom"
+    ],
+    "expectedJSGo": "en",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "de-DE",
+      "zh-Hans-TW"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "en-Cyrl",
+      "ja-Jpan-JP"
+    ],
+    "expectedJSGo": "ja",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "zh-Cyrl",
+      "en-US"
+    ],
+    "expectedJSGo": "en",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "ja-u"
+    ],
+    "expectedJSGo": "en",
+    "measured": false
+  },
+  {
+    "preferences": [
+      "??",
+      "zh_CN"
+    ],
+    "expectedJSGo": "zh-Hans",
+    "measured": false
+  }
+]

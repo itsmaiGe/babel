@@ -32,6 +32,13 @@ test("normalizeSettings honors the auto-translate switch and forces skip-same-la
   assert.equal(normalizeSettings({}).autoTranslate.skipSameLanguage, true);
 });
 
+test("normalizeSettings drops a legacy interface language field", () => {
+  const settings = normalizeSettings({ uiLanguage: "ja", enabled: false });
+  assert.equal(Object.hasOwn(settings, "uiLanguage"), false);
+  assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "uiLanguage"), false);
+  assert.equal(settings.enabled, false);
+});
+
 test("normalizeSettings keeps double click translation enabled with the plugin", () => {
   const settings = normalizeSettings({
     readTranslation: {
@@ -42,6 +49,22 @@ test("normalizeSettings keeps double click translation enabled with the plugin",
 
   assert.equal(settings.readTranslation.enabled, true);
   assert.equal(settings.readTranslation.cache, true);
+});
+
+test("normalizeSettings drops a legacy cache switch and keeps stored color text", () => {
+  const settings = normalizeSettings({
+    persistCache: false,
+    customPrompt: "unrelated",
+    style: { backgroundColor: "#E8EDF8", textColor: " Auto " },
+  });
+  assert.equal(Object.hasOwn(settings, "persistCache"), false);
+  assert.equal(settings.style.backgroundColor, "#E8EDF8");
+  assert.equal(settings.style.textColor, "Auto");
+  const again = normalizeSettings({ ...settings, customPrompt: "changed", persistCache: false });
+  assert.equal(again.customPrompt, "changed");
+  assert.equal(again.style.backgroundColor, "#E8EDF8");
+  assert.equal(again.style.textColor, "Auto");
+  assert.equal(Object.hasOwn(again, "persistCache"), false);
 });
 
 test("normalizeSettings keeps AI cache permanently enabled", () => {
@@ -175,4 +198,52 @@ test("normalizeSettings accepts only supported translation positions", () => {
     normalizeSettings({ style: { position: "beside" } }).style.position,
     DEFAULT_SETTINGS.style.position
   );
+});
+
+test("normalizeSettings validates the API format against the provider's allowed formats", () => {
+  assert.equal(normalizeSettings({ model: { provider: "openai" } }).model.protocol, "openai");
+  assert.equal(normalizeSettings({ model: { provider: "openai", protocol: "responses" } }).model.protocol, "responses");
+  assert.equal(normalizeSettings({ model: { provider: "openai", protocol: "anthropic" } }).model.protocol, "openai");
+  assert.equal(normalizeSettings({ model: { provider: "anthropic" } }).model.protocol, "anthropic");
+  assert.equal(normalizeSettings({ model: { provider: "anthropic", protocol: "openai" } }).model.protocol, "anthropic");
+  for (const provider of ["google", "deepseek", "zhipu", "kimi", "openrouter", "ollama", "lmstudio"])
+    assert.equal(normalizeSettings({ model: { provider, protocol: "responses" } }).model.protocol, "openai");
+  assert.deepEqual(normalizeSettings({ model: { provider: "custom" } }).model.protocol, "openai");
+});
+
+test("a saved format wins; a Custom setting without one infers from the exact base path", () => {
+  const infer = (baseUrl) => normalizeSettings({ model: { provider: "custom", baseUrl } }).model.protocol;
+  assert.equal(infer("https://x.example/v1/messages"), "anthropic");
+  assert.equal(infer("https://x.example/v1/responses"), "responses");
+  assert.equal(infer("https://x.example/v1/chat/completions"), "openai");
+  assert.equal(infer("https://x.example/v1/models"), "openai");
+  assert.equal(infer("https://x.example/openai/deep/v3"), "openai");
+  assert.equal(infer("https://x.example/v1/messages/v2"), "openai");
+  assert.equal(infer("https://x.example/v1/Messages"), "openai");
+  assert.equal(
+    normalizeSettings({ model: { provider: "custom", baseUrl: "https://x.example/v1/messages", protocol: "openai" } }).model.protocol,
+    "openai"
+  );
+  assert.equal(
+    normalizeSettings({ model: { provider: "custom", baseUrl: "https://x.example/v1/responses", protocol: "anthropic" } }).model.protocol,
+    "anthropic"
+  );
+  // Inference needs an absent format; a saved junk value falls back to the provider default.
+  assert.equal(
+    normalizeSettings({ model: { provider: "custom", baseUrl: "https://x.example/v1/messages", protocol: "banana" } }).model.protocol,
+    "openai"
+  );
+  // An empty value is no saved format, so the trailing path decides.
+  assert.equal(
+    normalizeSettings({ model: { provider: "custom", baseUrl: "https://x.example/v1/messages", protocol: "" } }).model.protocol,
+    "anthropic"
+  );
+});
+
+test("normalizing never rewrites the stored base URL and stays idempotent", () => {
+  const settings = normalizeSettings({ model: { provider: "custom", baseUrl: "https://x.example/v1/messages/" } });
+  assert.equal(settings.model.baseUrl, "https://x.example/v1/messages/");
+  assert.equal(settings.model.protocol, "anthropic");
+  assert.deepEqual(normalizeSettings(settings), settings);
+  assert.equal(DEFAULT_SETTINGS.model.protocol, "openai");
 });

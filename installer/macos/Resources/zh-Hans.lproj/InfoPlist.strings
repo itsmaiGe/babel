@@ -1,0 +1,3 @@
+"NSAppDataUsageDescription" = "Babel 管理器需要访问所选 Discord 数据文件夹，以安装或卸载插件。除非你明确选择删除，否则会保留已保存的数据。";
+"CFBundleDisplayName" = "Babel 管理器";
+"CFBundleName" = "Babel 管理器";

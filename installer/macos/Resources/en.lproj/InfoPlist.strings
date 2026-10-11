@@ -1,0 +1,3 @@
+"NSAppDataUsageDescription" = "Babel Manager needs access to the selected Discord data folder to install or remove the plugin. Saved data is kept unless you explicitly choose to erase it.";
+"CFBundleDisplayName" = "Babel Manager";
+"CFBundleName" = "Babel Manager";

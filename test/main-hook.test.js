@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { getApiKeyStatus, listModels, patchBrowserWindowOptions, providerHttpError, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
+const { getApiKeyStatus, getRuntime, getSettings, listModels, patchBrowserWindowOptions, saveConfig, setApiKey, setElectronForTests, testConnection } = require("../src/mod/main");
 const { normalizeSettings } = require("../src/shared/settings");
 
 test("patchBrowserWindowOptions replaces Discord preload and preserves the original path", () => {
@@ -36,11 +36,34 @@ test("patchBrowserWindowOptions skips Discord splash preload", () => {
   assert.equal(options.webPreferences.additionalArguments, undefined);
 });
 
-test("provider errors are converted to concise Chinese messages", () => {
-  assert.equal(providerHttpError(401, { error: { message: "invalid api key" } }), "API Key 无效或已过期，请重新填写。");
-  assert.equal(providerHttpError(429, { error: { code: "insufficient_quota", message: "quota exceeded" } }), "账户额度或余额不足，请充值后重试。");
-  assert.equal(providerHttpError(404, { error: { message: "model not found" } }), "找不到模型或接口，请检查模型地址和模型 ID。");
-  assert.equal(providerHttpError(503, null), "模型服务暂时不可用，请稍后重试。");
+test("provider failures use typed reasons and localized status text", () => {
+  const { classifyProviderStatus } = require("../src/mod/core/provider-fetch");
+  const i18n = require("../src/mod/ui/i18n/index");
+  const cases = [
+    [401, { error: { message: "invalid api key" } }, { code: "AUTH" }, "plugin.error.AUTH"],
+    [429, { error: { code: "insufficient_quota", message: "quota exceeded" } }, { code: "RATE_LIMIT", reason: "QUOTA" }, "plugin.error.RATE_LIMIT.QUOTA"],
+    [403, { error: { message: "forbidden model" } }, { code: "AUTH", reason: "PERMISSION" }, "plugin.error.AUTH.PERMISSION"],
+    [404, { error: { message: "model not found" } }, { code: "CONFIG", reason: "REQUEST_REJECTED" }, "plugin.error.CONFIG.REQUEST_REJECTED"],
+    [413, { message: "too large" }, { code: "INPUT", reason: "PROVIDER_LIMIT" }, "plugin.error.INPUT.PROVIDER_LIMIT"],
+    [503, null, { code: "NETWORK", reason: "PROVIDER_TEMPORARY" }, "plugin.error.NETWORK.PROVIDER_TEMPORARY"],
+    [429, { error: { message: "slow down" } }, { code: "RATE_LIMIT", reason: "TEMPORARY" }, "plugin.error.RATE_LIMIT.TEMPORARY"],
+    [400, { error: { type: "ModelProtocolUnsupported", message: "upstream routing" } }, { code: "CONFIG", reason: "PROTOCOL_UNSUPPORTED" }, "plugin.error.CONFIG.PROTOCOL_UNSUPPORTED"],
+    [400, { error: { code: "ModelProtocolUnsupported", message: "upstream routing" } }, { code: "CONFIG", reason: "PROTOCOL_UNSUPPORTED" }, "plugin.error.CONFIG.PROTOCOL_UNSUPPORTED"],
+    [400, { error: { message: "This model is only supported in the /v1/responses API." } }, { code: "CONFIG", reason: "PROTOCOL_UNSUPPORTED" }, "plugin.error.CONFIG.PROTOCOL_UNSUPPORTED"],
+    [400, { error: { message: "not a chat model" } }, { code: "CONFIG", reason: "PROTOCOL_UNSUPPORTED" }, "plugin.error.CONFIG.PROTOCOL_UNSUPPORTED"],
+    [404, { error: { code: "model_not_found", message: "unknown identifier" } }, { code: "CONFIG", reason: "MODEL_UNAVAILABLE" }, "plugin.error.CONFIG.MODEL_UNAVAILABLE"],
+    [422, { error: { type: "Model_Not_Found", message: "unknown identifier" } }, { code: "CONFIG", reason: "MODEL_UNAVAILABLE" }, "plugin.error.CONFIG.MODEL_UNAVAILABLE"],
+  ];
+  for (const [status, body, expected, id] of cases) {
+    assert.deepEqual(classifyProviderStatus(status, body), expected);
+    for (const locale of ["en", "zh-Hans", "zh-Hant", "ja"]) {
+      i18n.setLocale(locale);
+      const text = i18n.errorText({ ...expected, params: { status } });
+      assert.equal(text, i18n.t(id, { status }));
+      assert.doesNotMatch(text, /invalid api key|quota exceeded|forbidden model|model not found|slow down|upstream routing|unknown identifier/i);
+    }
+  }
+  i18n.setLocale("en");
 });
 
 test("hosted providers reject a missing API key before making a request", async () => {
@@ -85,6 +108,9 @@ test("testConnection uses staged settings and api key without reading the keycha
     assert.equal(requestUrl, "https://model.example/v1/chat/completions");
     assert.equal(requestHeaders.authorization, "Bearer sk-staged");
     assert.equal(requestBody.model, "demo-model");
+    assert.deepEqual(Object.keys(requestBody).sort(), ["messages", "model"]);
+    assert.ok(requestBody.messages.find(message => message.role === "system")?.content);
+    assert.ok(requestBody.messages.find(message => message.role === "user")?.content);
   } finally {
     if (previousFetch) global.fetch = previousFetch;
     else delete global.fetch;
@@ -149,6 +175,8 @@ test("translateWithSettings sends Claude providers through Anthropic Messages AP
     assert.equal(requestHeaders["x-api-key"], "sk-ant-test");
     assert.equal(requestHeaders["anthropic-version"], "2023-06-01");
     assert.equal(requestBody.model, "claude-haiku-4-5");
+    assert.deepEqual(Object.keys(requestBody).sort(), ["max_tokens", "messages", "model", "system"]);
+    assert.ok(requestBody.max_tokens > 0);
     assert.ok(requestBody.system);
     assert.equal(requestBody.messages[0].role, "user");
   } finally {
@@ -263,7 +291,7 @@ test("listModels fetches Gemini native models", async () => {
     const url = new URL(requestUrl);
 
     assert.equal(url.origin + url.pathname, "https://generativelanguage.googleapis.com/v1beta/models");
-    assert.equal(url.searchParams.get("key"), "gemini-key");
+    assert.equal(url.searchParams.get("key"), null);
     assert.deepEqual(result.models, [
       { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" }
     ]);
@@ -314,7 +342,7 @@ test("listModels fetches Claude models with Anthropic headers", async () => {
   }
 });
 
-test("API keys are encrypted per provider via safeStorage and never stored in plaintext", () => {
+test("API keys are encrypted per provider via safeStorage and never stored in plaintext", async () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -331,7 +359,7 @@ test("API keys are encrypted per provider via safeStorage and never stored in pl
   });
 
   try {
-    assert.deepEqual(setApiKey({ provider: "openai", apiKey: "sk-openai" }), { ok: true, hasApiKey: true });
+    await setApiKey({provider:"openai",apiKey:"sk-openai"});
     const status = getApiKeyStatus();
     assert.equal(status.openai, true);
     assert.equal(status.google, false);
@@ -341,7 +369,7 @@ test("API keys are encrypted per provider via safeStorage and never stored in pl
     assert.equal(raw.includes("sk-openai"), false);
     assert.ok(raw.includes("safeStorage"));
 
-    setApiKey({ provider: "openai", apiKey: "" });
+    await setApiKey({ provider: "openai", apiKey: "" });
     assert.equal(getApiKeyStatus().openai, false);
   } finally {
     setElectronForTests(null);
@@ -349,7 +377,7 @@ test("API keys are encrypted per provider via safeStorage and never stored in pl
   }
 });
 
-test("API key storage rejects unavailable encryption without replacing saved keys", () => {
+test("API key storage rejects unavailable encryption without replacing saved keys", async () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -363,8 +391,8 @@ test("API key storage rejects unavailable encryption without replacing saved key
     fs.mkdirSync(path.dirname(file));
     const original = JSON.stringify({ openai: { enc: "safeStorage", value: "existing-encrypted-key" } });
     fs.writeFileSync(file, original);
-    assert.throws(() => setApiKey({ provider: "deepseek", apiKey: "sk-test-only" }), /系统加密.*不可用/);
-    assert.equal(fs.readFileSync(file, "utf8"), original);
+    await assert.rejects(() => setApiKey({ provider: "deepseek", apiKey: "sk-test-only" }), /系统加密.*不可用/);
+    assert.equal(JSON.parse(fs.readFileSync(file,"utf8")).openai.value,JSON.parse(original).openai.value);
   } finally {
     setElectronForTests(null);
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -384,11 +412,11 @@ test("local models remain usable while OS encryption is unavailable for a legacy
   global.fetch = async () => ({ ok: true, text: async () => JSON.stringify({ data: [{ id: "local-test" }] }) });
   const result = await listModels({ settings: normalizeSettings({ model: { provider: "ollama" } }) });
   assert.equal(result.models[0].value, "local-test");
-  assert.equal(fs.readFileSync(file, "utf8"), original);
-  assert.throws(() => setApiKey({ provider: "custom", apiKey: "new-test-key" }), /系统加密.*不可用/);
+  assert.equal(JSON.parse(fs.readFileSync(file,"utf8")).openai.value,JSON.parse(original).openai.value);
+  await assert.rejects(() => setApiKey({ provider: "custom", apiKey: "new-test-key" }), /系统加密.*不可用/);
 });
 
-test("legacy wrapped API keys are migrated to OS encryption when read", () => {
+test("legacy wrapped API keys are migrated to OS encryption when read", async () => {
   const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-key-migration-"));
   const file = path.join(tmp, "discord-translator-mod", "api-keys.json");
@@ -403,11 +431,55 @@ test("legacy wrapped API keys are migrated to OS encryption when read", () => {
     }
   });
   try {
-    assert.equal(getApiKeyStatus().custom, true);
+    await require("../src/mod/main").getRuntime().ready;
+    assert.equal(getApiKeyStatus().custom, false);
+    assert.equal(getApiKeyStatus().unlinked, true);
     const entry = JSON.parse(fs.readFileSync(file, "utf8")).custom;
     assert.equal(entry.enc, "safeStorage");
     assert.notEqual(entry.value, Buffer.from("test-only-key").toString("base64"));
   } finally {
+    setElectronForTests(null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a damaged key file leaves settings readable and blocks key replacement", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-damaged-keys-"));
+  const dir = path.join(tmp, "discord-translator-mod");
+  const file = path.join(dir, "api-keys.json");
+  const original = "{not-json";
+  fs.mkdirSync(dir);
+  fs.writeFileSync(file, original);
+  fs.writeFileSync(path.join(dir, "settings.json"), `${JSON.stringify({ enabled: true, customPrompt: "kept" }, null, 2)}\n`);
+  setElectronForTests({ app: { getPath: () => tmp, once() {} }, safeStorage: { isEncryptionAvailable: () => false } });
+  try {
+    const loaded = await getSettings();
+    assert.equal(loaded.settings.customPrompt, "kept");
+    assert.equal(loaded.settings.enabled, true);
+    assert.equal(loaded.keyStatus.unavailable.reason, "INVALID_JSON");
+    assert.equal(loaded.keyStatus.unavailable.recoverable, true);
+    await assert.rejects(
+      saveConfig({
+        baseSettingsRevision: loaded.settingsRevision,
+        settings: loaded.settings,
+        key: { action: "replace", value: "should-not-write" }
+      }),
+      error => error.code === "MALFORMED" && error.reason === "INVALID_JSON"
+    );
+    assert.equal(fs.readFileSync(file, "utf8"), original);
+    const saved = await saveConfig({
+      baseSettingsRevision: loaded.settingsRevision,
+      settings: { ...loaded.settings, customPrompt: "still saved" },
+      key: { action: "keep" }
+    });
+    assert.equal(saved.settings.customPrompt, "still saved");
+    assert.equal(saved.keyStatus.unavailable.reason, "INVALID_JSON");
+    assert.equal(fs.readFileSync(file, "utf8"), original);
+  } finally {
+    getRuntime().settings.stopWatching();
     setElectronForTests(null);
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -428,7 +500,12 @@ for (const operation of ["translate", "models"]) {
       const promise = operation === "translate"
         ? translateWithSettings({ text: "hello" }, settings, "test-only-key")
         : listModels({ settings, apiKey: "test-only-key" });
-      await assert.rejects(promise, failure === "timeout" ? /超时/ : /网络连接失败.*重置/);
+      await assert.rejects(promise, error => {
+        assert.equal(error.code, failure === "timeout" ? "TIMEOUT" : "NETWORK");
+        assert.match(error.message, failure === "timeout" ? /超时/ : /网络连接失败/);
+        assert.doesNotMatch(error.message, /ECONNRESET|重置/);
+        return true;
+      });
     });
   }
 }
@@ -438,8 +515,8 @@ test("openSettingsFile opens the settings directory instead of the JSON file", (
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "../src/mod/main.js"), "utf8");
 
-  assert.ok(source.includes("const directoryPath = path.dirname(filePath);"));
-  assert.ok(source.includes("electron.shell.openPath(directoryPath)"));
+  assert.match(source, /const directory\s*=\s*getStoreDir\(\);/);
+  assert.ok(source.includes("electron.shell.openPath(directory)"));
   assert.equal(source.includes("electron.shell.openPath(filePath)"), false);
 });
 
@@ -449,39 +526,87 @@ test("openExternal opens only https links via the OS shell", async () => {
   const electron = { shell: { openExternal: async url => { opened.push(url); } } };
 
   assert.deepEqual(
-    await openExternal(electron, "https://x.com/unflwMaige"),
-    { ok: true, url: "https://x.com/unflwMaige" }
+    await openExternal(electron, "https://x.com/Samoye"),
+    { ok: true, url: "https://x.com/Samoye" }
   );
   assert.equal((await openExternal(electron, "file:///etc/passwd")).ok, false);
   assert.equal((await openExternal(electron, "javascript:alert(1)")).ok, false);
-  assert.deepEqual(opened, ["https://x.com/unflwMaige"]);
+  assert.deepEqual(opened, ["https://x.com/Samoye"]);
 });
 
-test("translation cache persists to disk and reloads, capped in size", () => {
+test("legacy persistCache false is ignored on startup, save, and external reload", async () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
-  const { loadTranslationCache, saveTranslationCache, setElectronForTests } = require("../src/mod/main");
-
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-cache-"));
-  setElectronForTests({ app: { getPath: () => tmp } });
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-persist-cache-"));
+  const dir = path.join(tmp, "discord-translator-mod");
+  const settingsFile = path.join(dir, "settings.json");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(settingsFile, JSON.stringify({
+    enabled: true,
+    persistCache: false,
+    customPrompt: "kept",
+    style: { backgroundColor: "#E8EDF8", textColor: " Auto " },
+  }));
+  setElectronForTests({ app: { getPath: () => tmp, once() {} }, safeStorage: { isEncryptionAvailable: () => false } });
   try {
-    assert.deepEqual(loadTranslationCache(), {});
-    saveTranslationCache({ a: "你好", b: "世界", junk: 123 });
-    const back = loadTranslationCache();
-    assert.equal(back.a, "你好");
-    assert.equal(back.b, "世界");
-    assert.equal("junk" in back, false); // non-string values dropped
-
-    const big = {};
-    for (let i = 0; i < 1500; i += 1) big["k" + i] = "v" + i;
-    const res = saveTranslationCache(big);
-    assert.equal(res.count, 1000); // capped
-    assert.equal(Object.keys(loadTranslationCache()).length, 1000);
+    const cacheFile = path.join(dir, "cache.json");
+    const stored = async (key, text) => {
+      const cache = getRuntime().cache;
+      assert.equal(Object.hasOwn(cache.status(), "persist"), false);
+      cache.put(key, text, cache.generation);
+      await cache.flush();
+      const body = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+      assert.equal(body.entries.some(([entry, value]) => entry === key && value === text), true);
+    };
+    const loaded = await getSettings();
+    assert.equal(Object.hasOwn(loaded.cache, "persist"), false);
+    assert.equal(Object.hasOwn(loaded.settings, "persistCache"), false);
+    assert.equal(loaded.settings.style.backgroundColor, "#E8EDF8");
+    assert.equal(loaded.settings.style.textColor, "Auto");
+    assert.equal(JSON.parse(fs.readFileSync(settingsFile, "utf8")).persistCache, false);
+    assert.equal(fs.existsSync(cacheFile), false);
+    await stored("a".repeat(64), "loaded");
+    const saved = await saveConfig({
+      baseSettingsRevision: loaded.settingsRevision,
+      settings: { ...loaded.settings, persistCache: false, customPrompt: "saved" },
+      key: { action: "keep" },
+    });
+    assert.equal(saved.settings.customPrompt, "saved");
+    assert.equal(Object.hasOwn(saved.settings, "persistCache"), false);
+    assert.equal(saved.settings.style.backgroundColor, "#E8EDF8");
+    const disk = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+    assert.equal(Object.hasOwn(disk, "persistCache"), false);
+    assert.equal(disk.style.backgroundColor, "#E8EDF8");
+    assert.equal(disk.customPrompt, "saved");
+    await stored("b".repeat(64), "saved");
+    disk.persistCache = false;
+    disk.customPrompt = "external";
+    fs.writeFileSync(settingsFile, JSON.stringify(disk));
+    getRuntime().settings.reload(true);
+    const again = await getSettings();
+    assert.equal(again.settings.customPrompt, "external");
+    assert.equal(Object.hasOwn(again.settings, "persistCache"), false);
+    assert.equal(Object.hasOwn(again.cache, "persist"), false);
+    const key = "c".repeat(64);
+    getRuntime().cache.put(key, "kept-on-disk", getRuntime().cache.generation);
+    await getRuntime().cache.flush();
+    const cache = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    assert.equal(cache.entries.some(([entry, text]) => entry === key && text === "kept-on-disk"), true);
   } finally {
+    clearTimeout(getRuntime().cache.timer);
+    getRuntime().settings.stopWatching();
     setElectronForTests(null);
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("translation cache persists to disk and reloads, capped in size", async t => {
+  const fs=require("node:fs"),os=require("node:os"),path=require("node:path"),{createHash}=require("node:crypto");
+  const {CacheStore}=require("../src/mod/core/cache-store"),{Writer}=require("../src/mod/core/storage");
+  const temp=fs.mkdtempSync(path.join(os.tmpdir(),"babel-cache-"));const cache=new CacheStore(temp,new Writer());t.after(()=>{clearTimeout(cache.timer);fs.rmSync(temp,{recursive:true,force:true});});await cache.ready;
+  for(let i=0;i<1500;i++)cache.put(createHash("sha256").update(String(i)).digest("hex"),String(i),0);
+  assert.equal(cache.status().count,500);await cache.flush();const loaded=new CacheStore(temp,new Writer());await loaded.ready;assert.equal(loaded.status().count,500);
 });
 
 test("compareVersions orders semantic versions numerically and ignores a v prefix", () => {
@@ -570,7 +695,7 @@ test("translateWithSettings turns a request timeout into a clear, friendly messa
   }
 });
 
-test("translateWithSettings turns a 'fetch failed' network error into a clear reason", async () => {
+test("translateWithSettings reports a network failure without DNS or host text", async () => {
   const { translateWithSettings } = require("../src/mod/main");
   const previousFetch = global.fetch;
   global.fetch = async () => {
@@ -582,7 +707,12 @@ test("translateWithSettings turns a 'fetch failed' network error into a clear re
     const settings = normalizeSettings({ enabled: true, model: { provider: "openai" } });
     await assert.rejects(
       translateWithSettings({ direction: "read", text: "hello" }, settings, "sk-test"),
-      /网络连接失败.*DNS/
+      error => {
+        assert.equal(error.code, "NETWORK");
+        assert.match(error.message, /网络连接失败/);
+        assert.doesNotMatch(error.message, /DNS|ENOTFOUND|api\.openai/);
+        return true;
+      }
     );
   } finally {
     if (previousFetch) global.fetch = previousFetch;

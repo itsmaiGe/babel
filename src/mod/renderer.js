@@ -1,107 +1,212 @@
 "use strict";
 
-const { createHash } = require("node:crypto");
-const { MODEL_PROVIDERS, TRANSLATION_STYLE_PRESETS, BABEL_VERSION } = requireShared("defaults");
-const { normalizeSettings } = requireShared("settings");
-const { textMatchesLanguage } = requireShared("language");
-const { buildTranslationMessages, resolveModelConfig } = requireShared("translate");
+const { RequestClient } = require("./ui/request-client");
+const { DisplayState } = require("./ui/display-state");
+const { DomWatch } = require("./ui/dom-watch");
+const { MODEL_PROVIDERS, MODEL_PROTOCOLS, TRANSLATION_STYLE_PRESETS, TRANSLATION_LANGUAGES, BABEL_VERSION } =
+  requireShared("defaults");
+const { normalizeSettings, normalizeEndpoint } = requireShared("settings");
+const { textMatchesLanguage, hasLetters } = requireShared("language");
+
+const i18n = require("./ui/i18n/index");
+const { UI_LOCALES } = requireShared("ui-locale");
+const { failure } = require("./core/errors");
+let systemLocale = "en";
+const controlHosts = new Map();
+const CHROME_ATTR = "data-dtm-chrome";
+const TEXT_PROPS = ["name", "label", "helperText", "placeholder", "previewText", "savedKeyLabel"];
+function msg(id, params = {}) { return { __dtmText: true, id, params }; }
+function errorMessage(error) { const descriptor = i18n.errorId(error); return msg(descriptor.id, descriptor.params); }
+function text(value) { return value?.__dtmText ? i18n.t(value.id, Object.fromEntries(Object.entries(value.params).map(([key, item]) => [key, item?.__dtmText ? text(item) : item]))) : String(value || ""); }
+function localizedSpec(spec) {
+  const result = { ...spec };
+  for (const key of TEXT_PROPS) if (key in spec) result[key] = text(spec[key]);
+  if (spec.options) result.options = spec.options.map(option => ({ ...option, label: text(option.label), ...(option.savedKeyLabel ? { savedKeyLabel: text(option.savedKeyLabel) } : {}) }));
+  return result;
+}
+function applyChromeEntry(node, key, value) {
+  if (key === "textContent") { node.textContent = text(value); node.lang = i18n.getLocale(); }
+  else node.setAttribute(key, text(value));
+}
+function chromeText(node, value, attribute) {
+  const key = attribute || "textContent";
+  if (!node.__dtmChromeDescriptors) node.__dtmChromeDescriptors = new Map();
+  node.__dtmChromeDescriptors.set(key, value);
+  if (typeof node.setAttribute === "function") node.setAttribute(CHROME_ATTR, "");
+  applyChromeEntry(node, key, value);
+}
+function clearChrome(node) {
+  if (!node) return;
+  delete node.__dtmChromeDescriptors;
+  if (typeof node.removeAttribute === "function") node.removeAttribute(CHROME_ATTR);
+}
+function sendSettingsConfig() {
+  sendMainWorldMessage("dtm:settings-config", { title: SETTINGS_LABEL, locale: i18n.getLocale(), sections: SETTINGS_SECTION_NAV.map(section => ({ key: section.key, label: text(section.label) })), icon: BABEL_ICON_PATHS, unavailable: i18n.t("plugin.error.CONFIG.NATIVE_UI_UNAVAILABLE"), savedKeyLabel: i18n.t("plugin.key.savedAria") });
+}
+function refreshUiChrome() {
+  sendSettingsConfig();
+  for (const [id, host] of controlHosts) {
+    if (host.dataset.dtmNativeReactMounted === "disposed") { controlHosts.delete(id); continue; }
+    host.lang = i18n.getLocale();
+    const spec = localizedSpec(host.__dtmControlSource);
+    const detail = { id, textOnly: true };
+    for (const key of TEXT_PROPS) if (key in spec) detail[key] = spec[key];
+    // Send labels only: values, callbacks, disabled state and composition are retained.
+    if (spec.options) detail.optionLabels = spec.options.map(option => ({ value: option.value, label: option.label, ...(option.savedKeyLabel ? { savedKeyLabel: option.savedKeyLabel } : {}) }));
+    host.__dtmControlSpec = { ...host.__dtmControlSpec, ...Object.fromEntries(TEXT_PROPS.filter(key => key in spec).map(key => [key, spec[key]])), ...(spec.options ? { options: spec.options } : {}) };
+    sendMainWorldMessage("dtm:mount-control", detail);
+  }
+  if (typeof document !== "undefined" && typeof document.querySelectorAll === "function") {
+    for (const node of document.querySelectorAll(`[${CHROME_ATTR}]`)) {
+      const entries = node.__dtmChromeDescriptors;
+      if (!entries) continue;
+      for (const [key, value] of entries) applyChromeEntry(node, key, value);
+    }
+  }
+  for (const block of document.querySelectorAll(".dtm-translation-block")) block.lang = block.__dtmChrome ? i18n.getLocale() : translationTag(settings.model.targetLanguage);
+  for (const slot of document.querySelectorAll("[data-dtm-section-key]")) slot.lang = i18n.getLocale();
+}
+function translationTag(value) { return TRANSLATION_LANGUAGES.find(item => item.value === value)?.tag || ""; }
 
 const RUNTIME_FLAG = "__discordTranslatorModStarted";
 const SEND_BOX_ID = "dtm-send-box";
 const SETTINGS_LABEL = "Babel";
 const SETTINGS_SECTION_ID_PREFIX = "dtm-settings-section-";
 const API_KEY_MASK = "************";
+const SETTINGS_PAGE_KEYS = new Set(["general", "model", "read", "style"]);
 const SETTINGS_SECTION_NAV = Object.freeze([
-  { key: "model", label: "模型" },
-  { key: "read", label: "消息翻译" },
-  { key: "send", label: "发送翻译" },
-  { key: "style", label: "译文外观" }
+  { key: "general", label: msg("plugin.section.general") },
+  { key: "model", label: msg("plugin.section.model") },
+  { key: "read", label: msg("plugin.section.read") },
+  { key: "style", label: msg("plugin.section.style") },
 ]);
-const LANGUAGE_OPTIONS = [
-  { value: "简体中文", label: "简体中文" },
-  { value: "繁体中文", label: "繁体中文" },
-  { value: "英语", label: "英语" },
-  { value: "日语", label: "日语" },
-  { value: "韩语", label: "韩语" },
-  { value: "法语", label: "法语" },
-  { value: "德语", label: "德语" },
-  { value: "西班牙语", label: "西班牙语" },
-  { value: "俄语", label: "俄语" }
-];
-const TRANSLATION_STYLE_OPTIONS = TRANSLATION_STYLE_PRESETS.map(style => ({ value: style.value, label: style.label }));
+const LANGUAGE_OPTIONS = TRANSLATION_LANGUAGES.map(({ id, value }) => ({ value, label: msg(`plugin.lang.${id}`) }));
+const MODEL_PROTOCOL_OPTIONS = MODEL_PROTOCOLS.map((value) => ({
+  value,
+  label: msg(`plugin.protocol.${value}`),
+}));
+const providerProtocolValues = (provider) => provider.protocols || [MODEL_PROTOCOLS[0]];
+const TRANSLATION_STYLE_OPTIONS = TRANSLATION_STYLE_PRESETS.map((style) => ({
+  value: style.value,
+  label: msg(`plugin.style.${style.value}`),
+}));
 const SEND_BOX_OPACITY_OPTIONS = [
-  { value: "1", label: "100%" },
-  { value: "0.9", label: "90%" },
-  { value: "0.8", label: "80%" },
-  { value: "0.7", label: "70%" },
-  { value: "0.6", label: "60%" },
-  { value: "0.5", label: "50%" },
-  { value: "0.4", label: "40%" }
+  { value: "1", label: msg("plugin.percent", { value: 100 }) },
+  { value: "0.9", label: msg("plugin.percent", { value: 90 }) },
+  { value: "0.8", label: msg("plugin.percent", { value: 80 }) },
+  { value: "0.7", label: msg("plugin.percent", { value: 70 }) },
+  { value: "0.6", label: msg("plugin.percent", { value: 60 }) },
+  { value: "0.5", label: msg("plugin.percent", { value: 50 }) },
+  { value: "0.4", label: msg("plugin.percent", { value: 40 }) },
 ];
 const TRANSLATION_POSITION_OPTIONS = [
-  { value: "below", label: "原文下方" },
-  { value: "above", label: "原文上方" }
+  { value: "below", label: msg("plugin.position.below") },
+  { value: "above", label: msg("plugin.position.above") },
 ];
 const FONT_OPTIONS = [
-  { value: "var(--font-primary)", label: "Discord 默认" },
-  { value: "inherit", label: "跟随消息" },
-  { value: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif", label: "系统无衬线" },
-  { value: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", label: "等宽字体" },
-  { value: "Georgia, \"Times New Roman\", serif", label: "衬线字体" }
+  { value: "var(--font-primary)", label: msg("plugin.font.discord") },
+  { value: "inherit", label: msg("plugin.font.inherit") },
+  {
+    value: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    label: msg("plugin.font.system"),
+  },
+  {
+    value: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    label: msg("plugin.font.mono"),
+  },
+  { value: 'Georgia, "Times New Roman", serif', label: msg("plugin.font.serif") },
 ];
 const STYLE_EMPHASIS_OPTIONS = [
-  { value: "none", label: "无" },
-  { value: "bold", label: "加重" },
-  { value: "light", label: "浅色" },
-  { value: "marker", label: "马克笔" },
-  { value: "underline", label: "下划线" },
-  { value: "wavy", label: "波浪线" },
-  { value: "strike", label: "删除线" }
+  { value: "none", label: msg("plugin.emphasis.none") },
+  { value: "bold", label: msg("plugin.emphasis.bold") },
+  { value: "light", label: msg("plugin.emphasis.light") },
+  { value: "marker", label: msg("plugin.emphasis.marker") },
+  { value: "underline", label: msg("plugin.emphasis.underline") },
+  { value: "wavy", label: msg("plugin.emphasis.wavy") },
+  { value: "strike", label: msg("plugin.emphasis.strike") },
 ];
-const BACKGROUND_COLOR_OPTIONS = [
-  { value: "auto", label: "跟随 Discord 主题" },
-  { value: "#303446", label: "夜间蓝灰" },
-  { value: "#2b2d31", label: "Discord 深灰" },
-  { value: "#35384a", label: "石板蓝" },
-  { value: "#26364a", label: "深海蓝" },
-  { value: "#233a3f", label: "静谧青" },
-  { value: "#263a2f", label: "苔藓绿" },
-  { value: "#3f3827", label: "柔和琥珀" },
-  { value: "#463238", label: "玫瑰灰" },
-  { value: "#3f344f", label: "薰衣草灰" },
-  { value: "#41364a", label: "紫藤灰" },
-  { value: "#e8edf8", label: "浅雾蓝" },
-  { value: "#e6f4f1", label: "浅薄荷" },
-  { value: "#f3efe5", label: "浅暖灰" },
-  { value: "#f4e8ee", label: "浅玫瑰" },
-  { value: "#ece7f7", label: "浅紫雾" },
-  { value: "#f2f3f5", label: "Discord 浅灰" }
-];
-const TEXT_COLOR_OPTIONS = [
-  { value: "auto", label: "自动（跟随主题和背景）" },
-  { value: "#f2f3f5", label: "强白" },
-  { value: "#dbdee1", label: "Discord 正文" },
-  { value: "#cbd5e1", label: "冷灰白" },
-  { value: "#dbeafe", label: "雾蓝白" },
-  { value: "#ccfbf1", label: "薄荷白" },
-  { value: "#dcfce7", label: "柔绿白" },
-  { value: "#fef3c7", label: "暖米白" },
-  { value: "#ffe4e6", label: "玫瑰白" },
-  { value: "#ede9fe", label: "淡紫白" },
-  { value: "#111827", label: "深墨" },
-  { value: "#1f2937", label: "深灰" },
-  { value: "#1e3a5f", label: "深蓝" },
-  { value: "#164e63", label: "深青" },
-  { value: "#14532d", label: "深绿" },
-  { value: "#7c2d12", label: "深琥珀" },
-  { value: "#7f1d1d", label: "深玫瑰" }
-];
-const DISCORD_UI = Object.freeze({
-  accountCategories: "categories__6131a",
-  settingCard: "container__75920",
-  stack: "stack_dbd263",
-  settingStack: "stack_dbd263 baseSettingWrapper__32428",
+const COLOR_NAMES = Object.freeze({
+  "#2b2d31": "graphite",
+  "#303446": "slate",
+  "#35384a": "blueGray",
+  "#26364a": "midnight",
+  "#233a3f": "darkTeal",
+  "#263a2f": "darkGreen",
+  "#3f3827": "olive",
+  "#463238": "wine",
+  "#3f344f": "indigo",
+  "#41364a": "plum",
+  "#e8edf8": "iceBlue",
+  "#e6f4f1": "mint",
+  "#f3efe5": "cream",
+  "#f4e8ee": "blush",
+  "#ece7f7": "lavender",
+  "#f2f3f5": "offWhite",
+  "#dbdee1": "lightGray",
+  "#cbd5e1": "silver",
+  "#dbeafe": "lightBlue",
+  "#ccfbf1": "aqua",
+  "#dcfce7": "lightGreen",
+  "#fef3c7": "lightYellow",
+  "#ffe4e6": "lightPink",
+  "#ede9fe": "lilac",
+  "#111827": "ink",
+  "#1f2937": "charcoal",
+  "#1e3a5f": "navy",
+  "#164e63": "teal",
+  "#14532d": "forest",
+  "#7c2d12": "rust",
+  "#7f1d1d": "maroon",
 });
+function colorOption(value) {
+  const id = value === "auto" ? "auto" : COLOR_NAMES[value];
+  return { value, label: msg(`plugin.color.${id}`) };
+}
+const BACKGROUND_COLOR_OPTIONS = [
+  "auto",
+  "#303446",
+  "#2b2d31",
+  "#35384a",
+  "#26364a",
+  "#233a3f",
+  "#263a2f",
+  "#3f3827",
+  "#463238",
+  "#3f344f",
+  "#41364a",
+  "#e8edf8",
+  "#e6f4f1",
+  "#f3efe5",
+  "#f4e8ee",
+  "#ece7f7",
+  "#f2f3f5",
+].map(colorOption);
+const TEXT_COLOR_OPTIONS = [
+  "auto",
+  "#f2f3f5",
+  "#dbdee1",
+  "#cbd5e1",
+  "#dbeafe",
+  "#ccfbf1",
+  "#dcfce7",
+  "#fef3c7",
+  "#ffe4e6",
+  "#ede9fe",
+  "#111827",
+  "#1f2937",
+  "#1e3a5f",
+  "#164e63",
+  "#14532d",
+  "#7c2d12",
+  "#7f1d1d",
+].map(colorOption);
+const DISCORD_UI = Object.freeze({
+  accountCategories: "",
+  settingCard: "",
+  stack: "",
+  settingStack: "",
+});
+
 const DISCORD_STACK_LAYOUTS = Object.freeze({
   rows: {
     align: "stretch",
@@ -109,7 +214,7 @@ const DISCORD_STACK_LAYOUTS = Object.freeze({
     direction: "vertical",
     wrap: "false",
     fullWidth: "true",
-    style: "gap: var(--space-xs); padding: var(--space-0);"
+    style: "display:flex;flex-direction:column;gap:16px;",
   },
   settingRow: {
     align: "stretch",
@@ -117,55 +222,52 @@ const DISCORD_STACK_LAYOUTS = Object.freeze({
     direction: "vertical",
     wrap: "false",
     fullWidth: "true",
-    style: "gap: var(--space-0); padding-top: var(--space-xs); padding-bottom: var(--space-xs);"
+    style: "display:flex;flex-direction:column;gap:0;",
   },
   actionsRow: {
     align: "center",
     justify: "end",
     direction: "horizontal",
-    wrap: "false",
+    wrap: "true",
     fullWidth: "true",
-    style: "gap: var(--space-xs); padding: var(--space-0);"
-  }
+    style: "display:flex;flex-wrap:wrap;gap:8px;",
+  },
 });
 
 let nativeApi = null;
 let settings = normalizeSettings({});
 let providerApiKeyStatus = {};
 let nativeError = "";
-let translationCache = new Map();
-let translationCacheGeneration = 0;
-let pendingTranslations = new Map();
-let messageOperations = new WeakMap();
-let persistCacheTimer = 0;
+let nativeStatus = null;
+let displayState = new DisplayState();
+let requests = null;
+let settingsRevision = 1,
+  executionRevision = 1;
+let credentialContext = "",
+  readDisplayContext = "",
+  pauseNoticeRevision = 0;
+let domWatch = null;
+let settingsForm = null,
+  retainedDraft = null,
+  activeSettingsKey = "general",
+  sharedFormFooter = null;
 let dismissedTranslations = new Set();
-// Message ids the user (or auto-translate) actually translated. The text cache is keyed
-// by text for API reuse, but only THESE messages get their translations restored on
-// scroll — otherwise a cached translation would "bleed" onto any other message that
-// happens to share the same text (e.g. a reply's quoted preview vs the original).
-let translatedMessages = new Set();
 let currentChannelId = "";
 let autoTranslateBaseline = new Map();
 let autoHandledMessages = new Set();
-let autoTranslateQueue = [];
-let autoTranslateActive = 0;
-const AUTO_TRANSLATE_CONCURRENCY = 2;
-let domHooksInstalled = false;
-let maintenanceScheduled = false;
+let autoEvictionFloor = 0n;
 let settingsPageGeneration = 0;
 let settingsPageOpen = false;
 let settingsSections = new Map();
 let nativeControlId = 0;
 let mainWorldMessageId = 0;
-let originalTestRuntime = null;
 const diagnosticLoggedMessages = new Set();
 const mainWorldControlCallbacks = new Map();
-const handledMainWorldMessageIds = new Set();
+const handledMainWorldMessages = { ids: new Set(), highest: 0, floor: 0 };
 let mainWorldControlEventsInstalled = false;
 const MAIN_WORLD_BRIDGE_ERROR = "Discord main-world bridge was not captured.";
 const MAIN_WORLD_CONTROL_RETRY_MS = 100;
 const MAIN_WORLD_CONTROL_MAX_ATTEMPTS = 20;
-const MAX_TRANSLATION_CACHE = 500;
 
 function requireShared(name) {
   try {
@@ -185,97 +287,112 @@ function start(api) {
 
   injectBaseStyles();
   installMainWorldControlEvents();
-  sendMainWorldMessage("dtm:settings-config", { title: SETTINGS_LABEL, sections: SETTINGS_SECTION_NAV, icon: BABEL_ICON_PATHS });
+  systemLocale = UI_LOCALES.includes(api.uiSystemLocale) ? api.uiSystemLocale : "en";
+  i18n.setLocale(systemLocale);
   installDomHooks();
-  loadSettingsSafe().then(loadPersistedCache).then(runDomMaintenance);
-}
-
-async function loadPersistedCache() {
-  if (!settings || !settings.readTranslation.cache) return;
-  if (!nativeApi || typeof nativeApi.loadCache !== "function") return;
-  const generation = translationCacheGeneration;
-  try {
-    const stored = await nativeApi.loadCache();
-    if (generation !== translationCacheGeneration) return;
-    if (!stored || typeof stored !== "object") return;
-    for (const [key, value] of Object.entries(stored)) {
-      if (typeof value === "string") translationCache.set(key, value);
-    }
-    while (translationCache.size > MAX_TRANSLATION_CACHE) {
-      const oldest = translationCache.keys().next().value;
-      if (oldest === undefined) break;
-      translationCache.delete(oldest);
-    }
-  } catch (_error) {
-    // A missing/corrupt cache is non-fatal.
-  }
-}
-
-function schedulePersistCache() {
-  if (!settings || !settings.readTranslation.cache) return;
-  if (!nativeApi || typeof nativeApi.saveCache !== "function") return;
-  if (persistCacheTimer) return;
-  persistCacheTimer = setTimeout(() => {
-    persistCacheTimer = 0;
-    try {
-      nativeApi.saveCache(Object.fromEntries(translationCache));
-    } catch (_error) {
-      // Persisting the cache is best-effort.
-    }
-  }, 3000);
-  if (persistCacheTimer && typeof persistCacheTimer.unref === "function") persistCacheTimer.unref();
-}
-
-function installDomHooks() {
-  if (domHooksInstalled) return;
-  domHooksInstalled = true;
-
-  document.addEventListener("dblclick", onMessageDoubleClick, true);
-  const observer = new MutationObserver(scheduleDomMaintenance);
-
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-
-  setInterval(runDomMaintenance, 1500);
-}
-
-function scheduleDomMaintenance() {
-  if (maintenanceScheduled) return;
-  maintenanceScheduled = true;
-
-  const schedule = typeof window.requestAnimationFrame === "function"
-    ? window.requestAnimationFrame.bind(window)
-    : callback => window.setTimeout(callback, 16);
-
-  schedule(() => {
-    maintenanceScheduled = false;
-    runDomMaintenance();
+  requests = new RequestClient(nativeApi, () => executionRevision);
+  nativeApi.onConfigChanged?.(() =>
+    loadSettingsSafe().then(() => {
+      settingsForm?.externalChange();
+      applyAutoTranslateSettings();
+      ensureSendBox();
+      refreshTranslationStyles();
+    }),
+  );
+  loadSettingsSafe().then(() => {
+    sendSettingsConfig();
+    applyAutoTranslateSettings();
   });
 }
 
-function runDomMaintenance() {
-  syncCurrentChannel();
-  ensureSendBox();
-
-  // Both translation passes walk the visible-message list. Skip the DOM query
-  // entirely when neither is active, and otherwise query once and share it.
-  const cacheActive = Boolean(settings && settings.readTranslation.cache && translationCache.size > 0);
-  if (!cacheActive && !autoTranslateEnabled()) return;
-  const messages = visibleMessages();
-  restoreVisibleTranslations(messages);
-  runAutoTranslate(messages);
+function installDomHooks() {
+  if (domWatch) return;
+  domWatch = new DomWatch({
+    document,
+    window,
+    findMessage,
+    onDoubleClick: onMessageDoubleClick,
+    sendEnabled: () => settings.sendTranslation.enabled,
+    onMessages: (messages) => {
+      restoreVisibleTranslations(messages);
+      runAutoTranslate(messages);
+    },
+    onRoute: syncCurrentChannel,
+    onPosition: () => ensureSendBox(),
+  });
 }
 
+function unwrap(result) {
+  if (result?.ok === false)
+    throw Object.assign(new Error("Operation failed."), result.error);
+  return result;
+}
+function applySnapshot(snapshot) {
+  const previous = executionRevision, previousLocale = i18n.getLocale();
+  settings = normalizeSettings(snapshot.settings || snapshot);
+  settingsRevision = snapshot.settingsRevision || settingsRevision;
+  executionRevision = snapshot.executionRevision || executionRevision;
+  credentialContext = snapshot.credentialContext || credentialContext;
+  const { sendLanguage: _sendLanguage, ...readModel } = settings.model || {};
+  readDisplayContext = JSON.stringify([
+    readModel,
+    settings.translationStyle,
+    settings.customPrompt,
+    credentialContext,
+  ]);
+  providerApiKeyStatus = snapshot.keyStatus || providerApiKeyStatus;
+  recordNativeStatus(snapshot.status);
+  if (UI_LOCALES.includes(snapshot.ui?.systemLocale)) systemLocale = snapshot.ui.systemLocale;
+  // The operating system is the only interface-language source; stored settings
+  // never override it.
+  i18n.setLocale(systemLocale);
+  if (previousLocale !== i18n.getLocale()) refreshUiChrome();
+  if (previous !== executionRevision) {
+    requests?.cancel();
+    pauseNoticeRevision = 0;
+    const keepRead = settings.enabled;
+    for (const record of displayState.records.values()) {
+      record.token = Symbol();
+      record.active.clear();
+      for (const [kind, state] of record.units)
+        if (state.status !== "success") record.units.delete(kind);
+      if (keepRead && record.context === readDisplayContext) {
+        record.revision = executionRevision;
+        for (const state of record.units.values())
+          state.revision = executionRevision;
+      }
+    }
+    for (const block of document.querySelectorAll(".dtm-translation-block")) {
+      const message = findMessage(block);
+      const id = message && getMessageId(message);
+      const record = id && displayState.get(id);
+      const state = record?.units.get(block.dataset?.dtmUnit);
+      if (
+        keepRead &&
+        record?.context === readDisplayContext &&
+        record.revision === executionRevision &&
+        state?.status === "success"
+      )
+        continue;
+      block.remove();
+    }
+  }
+}
 async function loadSettingsSafe() {
+  let timeout;
   try {
-    settings = normalizeSettings(await nativeApi.getSettings());
-    providerApiKeyStatus = typeof nativeApi.getApiKeyStatus === "function"
-      ? await nativeApi.getApiKeyStatus()
-      : {};
-    nativeError = "";
+    const result = await Promise.race([
+      nativeApi.getSettings(),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(failure("STORAGE", null, { reason: "READ_FAILED" })), 8000); timeout.unref?.(); }),
+    ]);
+    applySnapshot(unwrap(result));
+    if (!providerApiKeyStatus.previews && nativeApi.getApiKeyStatus)
+      providerApiKeyStatus = unwrap(await nativeApi.getApiKeyStatus());
   } catch (error) {
-    settings = normalizeSettings(settings);
-    providerApiKeyStatus = {};
-    nativeError = publicError(error);
+    nativeStatus = error?.code ? { code: error.code, reason: error.reason } : null;
+    nativeError = errorMessage(error);
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -285,6 +402,14 @@ function injectBaseStyles() {
   const style = document.createElement("style");
   style.id = "dtm-style";
   style.textContent = `
+    /* Ancestor conflict: Discord's inline floating menus position against the nearest
+       query container while Chromium draws them against the window, so a container-type
+       above a native control displaces its menu. Rows wrap intrinsically instead. */
+    [data-dtm-pair] {display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,max(252px,calc((100% - 16px) / 2 - 1px))),1fr));gap:16px;align-items:end;}
+    [data-dtm-native-setting-row][hidden] {display:none;}
+    [data-dtm-actions] {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;}
+    [data-dtm-actions] > [data-dtm-action-buttons] {margin-left:auto;}
+    [data-dtm-action-status] {flex:1 1 240px;min-width:0;}
     .dtm-translation-block, [data-dtm-style-preview-block] {
       box-sizing: border-box;
       width: fit-content;
@@ -378,34 +503,7 @@ function injectBaseStyles() {
       white-space: normal;
       overflow-wrap: anywhere;
     }
-    .dtm-swatch-field {
-      display: grid;
-      gap: 10px;
-    }
-    .dtm-field-label {
-      color: var(--text-normal);
-      font-weight: 600;
-    }
-    .dtm-swatch-grid {
-      display: grid;
-      grid-template-columns: repeat(9, 28px);
-      gap: 8px;
-    }
-    .dtm-swatch {
-      width: 28px;
-      height: 28px;
-      padding: 0;
-      border: 2px solid var(--border-subtle, rgba(128, 132, 142, .4));
-      border-radius: 7px;
-      background: var(--dtm-swatch-color);
-      cursor: pointer;
-    }
-    .dtm-swatch[aria-pressed="true"] {
-      border-color: var(--brand-500, #5865f2);
-      box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-500, #5865f2) 28%, transparent);
-    }
     .dtm-about {
-      margin-top: 28px;
       padding-top: 16px;
       border-top: 1px solid var(--border-subtle, rgba(128, 132, 142, .2));
       color: var(--text-muted, #949ba4);
@@ -413,416 +511,1062 @@ function injectBaseStyles() {
       line-height: 1.6;
     }
     .dtm-about-title {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 2px 6px;
       font-size: 14px;
       font-weight: 700;
       color: var(--text-default, var(--header-primary, #dbdee1));
     }
+    .dtm-about-version {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted, #949ba4);
+    }
     .dtm-about-desc { margin-top: 6px; }
     .dtm-about-why { margin-top: 4px; }
-    .dtm-about-meta {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 10px;
-    }
-    .dtm-about-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      color: var(--text-link, #00a8fc);
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .dtm-about-link:hover { text-decoration: underline; }
     .dtm-about-update {
       margin-top: 10px;
       font-size: 13px;
       font-weight: 600;
     }
-    .dtm-about-update-status {
-      color: var(--text-muted, #949ba4);
-      font-weight: 400;
-    }
+    .dtm-about-thanks { margin-top: 10px; }
   `;
   document.documentElement.appendChild(style);
 }
 
 function normalizeText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function settingsSectionId(sectionKey) {
   return `${SETTINGS_SECTION_ID_PREFIX}${sectionKey}`;
 }
 
-async function openSettingsPanel() {
+function recordNativeStatus(status) {
+  nativeStatus = status?.code ? { code: status.code, reason: status.reason } : null;
+  nativeError = nativeStatus ? errorMessage(status) : "";
+}
+
+// Revision conflict and recoverable corrupt JSON can be overwritten. Unreadable
+// or failed storage cannot; reload is only offered when recovery asks for it.
+function storageNotice(status) {
+  if (!status?.code) return { conflict: false, overwrite: false, reload: false };
+  if (status.code === "CONFLICT") return { conflict: true, overwrite: true, reload: true };
+  if (status.code === "MALFORMED" && status.reason === "INVALID_JSON")
+    return { conflict: false, overwrite: true, reload: true };
+  const reload =
+    (status.code === "MALFORMED" && status.reason === "UNREADABLE") ||
+    (status.code === "PARTIAL_SAVE" && status.reason === "KEY_ROLLBACK_FAILED");
+  return { conflict: false, overwrite: false, reload };
+}
+
+// A coded status other than a real conflict or repairable JSON means the store
+// cannot accept a write. A retained draft's older revision must not hide that.
+function storageUnavailable(status) {
+  if (!status?.code) return false;
+  if (status.code === "CONFLICT") return false;
+  if (status.code === "MALFORMED" && status.reason === "INVALID_JSON") return false;
+  return true;
+}
+
+function reconcileRetainedDraft(formId, savedSettings, savedRevision) {
+  if (!retainedDraft || retainedDraft.formId !== formId) return;
+  const saved = normalizeSettings(savedSettings);
+  const aligned = normalizeSettings({
+    ...retainedDraft.settings,
+    sendBox: {
+      ...retainedDraft.settings.sendBox,
+      x: saved.sendBox.x,
+      y: saved.sendBox.y,
+      width: saved.sendBox.width,
+    },
+  });
+  if (JSON.stringify(aligned) === JSON.stringify(saved)) {
+    retainedDraft = null;
+    return;
+  }
+  retainedDraft = { settings: aligned, base: saved, revision: savedRevision, formId };
+}
+
+async function openSettingsPanel(activeKey) {
+  const explicitPage = arguments.length > 0 && activeKey != null;
+  if (explicitPage) activeSettingsKey = activeKey === "send" ? "read" : (SETTINGS_PAGE_KEYS.has(activeKey) ? activeKey : "general");
+  else if (!SETTINGS_PAGE_KEYS.has(activeSettingsKey)) activeSettingsKey = "general";
   if (settingsPageOpen) {
     mountSettingsSections();
+    if (explicitPage && activeSettingsKey === "read") settingsForm?.refreshCacheStatus?.();
     return;
   }
   settingsPageOpen = true;
   const generation = ++settingsPageGeneration;
   await loadSettingsSafe();
   if (generation !== settingsPageGeneration) return;
-
-  const body = div(DISCORD_UI.accountCategories);
-  const formState = JSON.parse(JSON.stringify(settings));
-  const preview = translationStylePreview(formState.style);
-  const updateStylePreview = () => refreshStylePreview(preview, formState.style);
-  const fetchedModelOptions = new Map();
-  const providerSelectHost = div();
-  const baseUrlFieldHost = div();
-  const modelFieldHost = div();
-  const apiKeyFieldHost = div();
-  const customPromptHost = div();
+  const formState = JSON.parse(
+    JSON.stringify(retainedDraft?.settings || settings),
+  );
+  let base = JSON.parse(JSON.stringify(retainedDraft?.base || settings)),
+    baseRevision = retainedDraft?.revision || settingsRevision;
+  let observedRevision = settingsRevision,
+    conflict = Boolean(
+      (retainedDraft && baseRevision !== settingsRevision) ||
+        storageNotice(nativeStatus).conflict,
+    ),
+    saving = false,
+    keyAction = "keep",
+    credentialToken = 0;
+  let refreshModelsInFlight = false,
+    testConnectionInFlight = false,
+    lastSaveError = "",
+    lastSaveSuccess = false,
+    cacheReadGeneration = 0;
+  const fetchedModelOptions = new Map(),
+    body = div(),
+    preview = translationStylePreview(formState.style);
+  const providerSelectHost = div(),
+    baseUrlFieldHost = div(),
+    modelFieldHost = div(),
+    protocolFieldHost = div(),
+    apiKeyFieldHost = div(),
+    keyActionsHost = div(),
+    httpHost = div(),
+    customPromptHost = div();
+  const save = button(msg("plugin.save"), "primary"),
+    discard = button(msg("plugin.discard"), "secondary"),
+    openConfig = button(msg("plugin.openConfig"), "secondary"),
+    clearCache = button(msg("plugin.clearCache"), "secondary"),
+    refreshModels = button(msg("plugin.refreshModels"), "secondary"),
+    testConnection = button(msg("plugin.testConnection"), "secondary");
+  const saveStatus = statusField(""),
+    connectionStatus = statusField(""),
+    keyStatus = statusField(""),
+    openConfigStatus = statusField(""),
+    cacheStatus = statusField(""),
+    pauseStatus = statusField("");
+  keyStatus.dataset.dtmKeyStatus = "true";
+  // Footer action statuses stay distinct: each reports only its own action.
+  saveStatus.dataset.dtmActionStatus = "save";
+  openConfigStatus.dataset.dtmActionStatus = "openConfig";
+  cacheStatus.dataset.dtmActionStatus = "cache";
+  keyActionsHost.dataset.dtmSelfHide = "true";
   let modelComboBoxHost = null;
-
-  const save = button("保存", "primary");
-  const openConfig = button("打开配置文件夹", "secondary");
-  const clearCache = button("清除翻译缓存", "secondary");
-  const refreshModels = button("刷新模型", "secondary");
-  const testConnection = button("测试连接", "secondary");
-  let refreshModelsInFlight = false;
-  let testConnectionInFlight = false;
-  if (nativeError) showNativeToast(nativeError, "failure");
-
+  function preferences() {
+    const { __apiKey, ...value } = formState;
+    return normalizeSettings(value);
+  }
+  function dirty() {
+    return (
+      JSON.stringify(preferences()) !== JSON.stringify(base) ||
+      Boolean(formState.__apiKey) ||
+      keyAction !== "keep"
+    );
+  }
+  function feedback(message, tone = "message") {
+    connectionStatus.update(message, tone === "failure" ? "critical" : "default");
+    showNativeToast(message, tone);
+  }
+  function changed() {
+    lastSaveError = "";
+    lastSaveSuccess = false;
+    connectionStatus.update("");
+    syncState();
+  }
+  function presentedConflict() {
+    const notice = storageNotice(nativeStatus);
+    if (storageUnavailable(nativeStatus))
+      return { overwrite: false, reload: notice.reload, conflict: false };
+    const showConflict = conflict || notice.conflict;
+    return {
+      overwrite: showConflict || notice.overwrite,
+      reload: showConflict || notice.reload,
+      conflict: showConflict,
+    };
+  }
+  function syncState() {
+    const presented = presentedConflict();
+    save.disabled = saving || (!dirty() && !presented.overwrite);
+    discard.disabled = saving || (!dirty() && !presented.reload);
+    save.setLabel(presented.overwrite ? msg("plugin.overwrite") : msg("plugin.save"));
+    discard.setLabel(presented.reload ? msg("plugin.reload") : msg("plugin.discard"));
+    let message = "",
+      tone = "default";
+    if (lastSaveError) {
+      message = lastSaveError;
+      tone = "critical";
+    } else if (saving) message = msg("plugin.saving");
+    else if (presented.conflict) {
+      message = msg("plugin.conflict");
+      tone = "warning";
+    } else if (nativeError) {
+      message = nativeError;
+      tone = "critical";
+    } else if (dirty()) message = msg("plugin.dirty");
+    else if (lastSaveSuccess) message = msg("plugin.savedToast");
+    saveStatus.update(message, tone);
+  }
+  function context() {
+    return JSON.stringify([
+      formState.model.provider,
+      formState.model.baseUrl,
+      formState.model.protocol,
+      formState.model.modelId,
+      credentialToken,
+    ]);
+  }
   function currentSettingsRequest() {
-    const { __apiKey, ...preferences } = formState;
-    const request = { settings: normalizeSettings(preferences) };
+    const request = { settings: preferences() };
     const apiKey = apiKeyValueForRequest(formState.__apiKey);
     if (apiKey) request.apiKey = apiKey;
     return request;
   }
-
-  testConnection.addEventListener("click", async () => {
-    if (testConnectionInFlight) return;
-    testConnectionInFlight = true;
-    testConnection.setLoading(true);
-    try {
-      const result = await nativeApi.testConnection(currentSettingsRequest());
-      showNativeToast(`连接成功：${result.text}`, "success");
-    } catch (error) {
-      showNativeToast(publicError(error), "failure");
-    } finally {
-      testConnection.setLoading(false);
-      testConnectionInFlight = false;
+  function modelCacheKey() {
+    return `${formState.model.provider}:${formState.model.baseUrl}:${formState.model.protocol}`;
+  }
+  function keyDescription() {
+    if (keyAction === "reset") return { text: msg("plugin.key.resetExplain"), tone: "default" };
+    if (providerApiKeyStatus.unavailable)
+      return {
+        text: msg(providerApiKeyStatus.unavailable.recoverable ? "plugin.key.damaged" : "plugin.key.accessDenied"),
+        tone: "critical",
+      };
+    if (keyAction === "remove") return { text: msg("plugin.key.removePending"), tone: "default" };
+    if (keyAction === "link") return { text: msg("plugin.key.linkPending"), tone: "default" };
+    if (keyAction === "removeLegacy") return { text: msg("plugin.key.legacyRemovePending"), tone: "default" };
+    if (formState.__apiKey)
+      return {
+        text: msg(providerApiKeyStatus.secureStorageAvailable === false ? "plugin.key.testOnly" : "plugin.key.replacePending"),
+        tone: "default",
+      };
+    if (providerApiKeyStatus.unlinked) return { text: msg("plugin.key.unlinked"), tone: "warning" };
+    return "";
+  }
+  function renderKeyActions() {
+    clearChildren(keyActionsHost);
+    const items = [];
+    if (providerApiKeyStatus.unavailable?.recoverable) {
+      const reset = button(msg("plugin.key.reset"), "secondary");
+      reset.addEventListener("click", () => {
+        formState.__apiKey = "";
+        keyAction = "reset";
+        credentialToken++;
+        keyStatus.update(keyDescription());
+        changed();
+      });
+      items.push(reset);
     }
-  });
-
-  refreshModels.addEventListener("click", () => refreshModelList());
-
-  function renderProviderSelect() {
-    clearChildren(providerSelectHost);
-    providerSelectHost.appendChild(selectField("AI 平台", formState.model.provider, providerOptionsWithStatus(providerApiKeyStatus), value => {
-      const provider = providerById(value);
-      formState.model.provider = provider.value;
-      formState.model.baseUrl = provider.baseUrl;
-      formState.model.modelId = provider.defaultModel;
-      delete formState.__apiKey;
-      renderProviderFields();
-      renderApiKeyField();
-    }));
-  }
-
-  function renderProviderFields() {
-    clearChildren(baseUrlFieldHost);
-    const provider = providerById(formState.model.provider);
-
-    baseUrlFieldHost.appendChild(inputField("模型地址", "text", formState.model.baseUrl, value => {
-      if (provider.value === "custom") formState.model.baseUrl = value;
-    }, { disabled: provider.value !== "custom" }));
-
-    renderModelField();
-  }
-
-  function renderModelField() {
-    const provider = providerById(formState.model.provider);
-    const allOptions = fetchedModelOptions.get(modelCacheKey(provider)) || provider.models || [];
-    const modelOptions = optionsWithCurrentValue(allOptions, formState.model.modelId);
-    if (modelComboBoxHost && modelComboBoxHost.parentElement === modelFieldHost) {
-      modelComboBoxHost.updateOptions(formState.model.modelId, modelOptions);
+    if (providerApiKeyStatus.unavailable) {
+      keyActionsHost.appendChild(buttonRow(items));
+      setRowVisible(keyActionsHost, items.length > 0);
       return;
     }
-
+    if (providerApiKeyStatus[formState.model.provider]) {
+      const remove = button(msg("plugin.key.remove"), "secondary");
+      remove.addEventListener("click", () => {
+        formState.__apiKey = "";
+        keyAction = "remove";
+        credentialToken++;
+        keyStatus.update(keyDescription());
+        changed();
+      });
+      items.push(remove);
+    }
+    if (providerApiKeyStatus.unlinked) {
+      if (formState.model.provider === "custom") {
+        const link = button(msg("plugin.key.link"), "secondary");
+        link.addEventListener("click", () => {
+          keyAction = "link";
+          credentialToken++;
+          keyStatus.update(keyDescription());
+          changed();
+        });
+        items.push(link);
+      }
+      const remove = button(msg("plugin.key.removeLegacy"), "secondary");
+      remove.addEventListener("click", () => {
+        keyAction = "removeLegacy";
+        credentialToken++;
+        keyStatus.update(keyDescription());
+        changed();
+      });
+      items.push(remove);
+    }
+    keyActionsHost.appendChild(buttonRow(items));
+    setRowVisible(keyActionsHost, items.length > 0);
+  }
+  async function refreshKeyStatus() {
+    const captured = context();
+    try {
+      const result = unwrap(
+        await nativeApi.getApiKeyStatus?.({
+          provider: formState.model.provider,
+          baseUrl: formState.model.baseUrl,
+        }),
+      );
+      if (generation !== settingsPageGeneration || context() !== captured)
+        return;
+      providerApiKeyStatus = result || {};
+      keyStatus.update(keyDescription());
+      renderKeyActions();
+    } catch (error) {
+      keyStatus.update(errorMessage(error), "critical");
+    }
+  }
+  function renderProviderSelect() {
+    clearChildren(providerSelectHost);
+    providerSelectHost.appendChild(
+      selectField(
+        msg("plugin.provider"),
+        formState.model.provider,
+        providerOptionsWithStatus(providerApiKeyStatus),
+        (value) => {
+          const provider = providerById(value);
+          Object.assign(formState.model, {
+            provider: provider.value,
+            baseUrl: provider.baseUrl,
+            modelId: provider.defaultModel,
+            protocol: providerProtocolValues(provider)[0],
+            allowInsecureHttp: false,
+            insecureHttpEndpoint: "",
+          });
+          formState.__apiKey = "";
+          keyAction = "keep";
+          credentialToken++;
+          renderProtocolField();
+          renderProviderFields();
+          renderApiKeyField();
+          refreshKeyStatus();
+          changed();
+        },
+      ),
+    );
+  }
+  function renderHttp() {
+    clearChildren(httpHost);
+    let shown = false;
+    try {
+      const endpoint = normalizeEndpoint(formState.model.baseUrl),
+        url = new URL(endpoint);
+      if (
+        formState.model.provider === "custom" &&
+        url.protocol === "http:" &&
+        !isLoopback(url.hostname)
+      ) {
+        httpHost.appendChild(
+          toggleRow(
+            msg("plugin.allowHttp"),
+            formState.model.allowInsecureHttp,
+            (value) => {
+              formState.model.allowInsecureHttp = value;
+              formState.model.insecureHttpEndpoint = value ? endpoint : "";
+              changed();
+            },
+          ),
+        );
+        shown = true;
+      }
+    } catch (_) {
+      httpHost.appendChild(
+        statusField(msg("plugin.error.CONFIG.INVALID_ENDPOINT"), "critical"),
+      );
+      shown = true;
+    }
+    setRowVisible(httpHost, shown);
+  }
+  function renderProviderFields() {
+    clearChildren(baseUrlFieldHost);
+    baseUrlFieldHost.appendChild(
+      inputField(
+        msg("plugin.endpoint"),
+        "text",
+        formState.model.baseUrl,
+        (value) => {
+          formState.model.baseUrl = value;
+          formState.model.allowInsecureHttp = false;
+          formState.model.insecureHttpEndpoint = "";
+          formState.__apiKey = "";
+          keyAction = "keep";
+          credentialToken++;
+          providerApiKeyStatus = {
+            ...providerApiKeyStatus,
+            custom: false,
+            previews: { ...providerApiKeyStatus.previews, custom: "" },
+          };
+          renderHttp();
+          renderApiKeyField();
+          refreshKeyStatus();
+          changed();
+        },
+        { disabled: formState.model.provider !== "custom" },
+      ),
+    );
+    renderHttp();
+    renderModelField();
+  }
+  function renderModelField() {
+    const provider = providerById(formState.model.provider),
+      options = optionsWithCurrentValue(
+        (fetchedModelOptions.get(modelCacheKey()) || provider.models || []).map(item => item.label === "OpenAI 最新别名" ? { ...item, label: msg("plugin.modelAlias") } : item),
+        formState.model.modelId,
+      );
+    if (modelComboBoxHost?.parentElement === modelFieldHost) {
+      modelComboBoxHost.updateOptions(formState.model.modelId, options);
+      return;
+    }
     clearChildren(modelFieldHost);
-    modelComboBoxHost = modelComboBoxHostFor("匹配模型", formState.model.modelId, modelOptions, value => {
-      formState.model.modelId = value;
-    });
+    modelComboBoxHost = modelComboBoxHostFor(
+      msg("plugin.model"),
+      formState.model.modelId,
+      options,
+      (value) => {
+        formState.model.modelId = value;
+        changed();
+      },
+    );
     modelFieldHost.appendChild(modelComboBoxHost);
   }
-
+  // The API format selector appears only where the provider allows more than
+  // one format; the selected format never follows the base URL path.
+  function renderProtocolField() {
+    clearChildren(protocolFieldHost);
+    const provider = providerById(formState.model.provider),
+      allowed = providerProtocolValues(provider);
+    setRowVisible(protocolFieldHost, allowed.length > 1);
+    if (allowed.length <= 1) return;
+    protocolFieldHost.appendChild(
+      selectField(
+        msg("plugin.protocol"),
+        formState.model.protocol,
+        MODEL_PROTOCOL_OPTIONS.filter((option) => allowed.includes(option.value)),
+        (value) => {
+          formState.model.protocol = value;
+          renderModelField();
+          changed();
+        },
+      ),
+    );
+  }
   function renderApiKeyField() {
     clearChildren(apiKeyFieldHost);
-    formState.__apiKey = "";
-    apiKeyFieldHost.appendChild(passwordField("API Key", "", value => { formState.__apiKey = value; }, apiKeyPlaceholder(formState.model.provider)));
+    apiKeyFieldHost.appendChild(
+      passwordField(
+        "API Key",
+        formState.__apiKey || "",
+        (value) => {
+          if (providerApiKeyStatus.unavailable) return;
+          formState.__apiKey = value;
+          keyAction = value ? "replace" : "keep";
+          credentialToken++;
+          keyStatus.update(keyDescription());
+          changed();
+        },
+        apiKeyPlaceholder(formState.model.provider),
+        Boolean(providerApiKeyStatus.unavailable),
+      ),
+    );
+    keyStatus.update(keyDescription());
+    renderKeyActions();
   }
-
-  function modelCacheKey(provider) {
-    return provider.value === "custom"
-      ? `${provider.value}:${String(formState.model.baseUrl || "").trim()}`
-      : provider.value;
-  }
-
   async function refreshModelList() {
     if (refreshModelsInFlight) return;
     refreshModelsInFlight = true;
     refreshModels.setLoading(true);
-    const request = currentSettingsRequest();
-    const requestKey = modelCacheKey(providerById(formState.model.provider));
+    connectionStatus.update("");
+    const captured = context(),
+      request = currentSettingsRequest(),
+      key = modelCacheKey();
     try {
-      const result = await nativeApi.listModels(request);
-      if (generation !== settingsPageGeneration) return;
-      const models = Array.isArray(result && result.models) ? result.models : [];
-      if (models.length === 0) throw new Error("没有可用模型。");
-      fetchedModelOptions.set(requestKey, models);
-      if (requestKey !== modelCacheKey(providerById(formState.model.provider))) return;
-      if (formState.model.modelId === request.settings.model.modelId && !models.some(model => model.value === formState.model.modelId)) {
-        formState.model.modelId = models[0].value;
-      }
+      const result = unwrap(await nativeApi.listModels(request));
+      if (generation !== settingsPageGeneration || context() !== captured)
+        return;
+      fetchedModelOptions.set(key, result.models || []);
       renderModelField();
-      showNativeToast(`已刷新 ${models.length} 个模型`, "success");
+      feedback(msg("plugin.modelsRefreshed", { count: (result.models || []).length }), "success");
     } catch (error) {
-      showNativeToast(publicError(error), "failure");
+      if (generation === settingsPageGeneration && context() === captured)
+        feedback(errorMessage(error), "failure");
     } finally {
-      refreshModels.setLoading(false);
       refreshModelsInFlight = false;
+      refreshModels.setLoading(false);
     }
   }
-  renderProviderSelect();
-  renderProviderFields();
-  renderApiKeyField();
-
-  const customPromptField = inputField("自定义提示词", "textarea", formState.customPrompt, value => {
-    formState.customPrompt = value;
-  }, { placeholder: "例如：使用简短自然的游戏聊天语气，保留专有名词。" });
-  customPromptHost.appendChild(customPromptField);
-  const syncCustomPromptVisibility = () => {
-    const display = formState.translationStyle === "custom" ? "" : "none";
-    customPromptHost.style.display = display;
-    const row = customPromptHost.closest("[data-dtm-native-setting-row='true']");
-    if (row) row.style.display = display;
-  };
-  syncCustomPromptVisibility();
-
-  body.append(
-    section("模型", [
-      providerSelectHost,
-      baseUrlFieldHost,
-      modelFieldHost,
-      apiKeyFieldHost,
-      buttonRow([refreshModels, testConnection])
-    ], "model"),
-    section("消息翻译", [
-      toggleRow("启用插件", formState.enabled, value => { formState.enabled = value; }),
-      toggleRow("自动翻译新消息", formState.autoTranslate.enabled, value => { formState.autoTranslate.enabled = value; }),
-      languageSelectField("阅读目标语言", formState.model.targetLanguage, value => { formState.model.targetLanguage = value; }),
-      selectField("翻译风格", formState.translationStyle, TRANSLATION_STYLE_OPTIONS, value => {
-        formState.translationStyle = value;
-        syncCustomPromptVisibility();
-      }),
-      customPromptHost
-    ], "read"),
-    section("发送翻译", [
-      toggleRow("启用发送翻译输入框", formState.sendTranslation.enabled, value => { formState.sendTranslation.enabled = value; }),
-      languageSelectField("发送目标语言", formState.model.sendLanguage, value => { formState.model.sendLanguage = value; }),
-      toggleRow("回车后自动发送", formState.sendTranslation.enterToSend, value => { formState.sendTranslation.enterToSend = value; }),
-      selectField("输入框透明度", String(formState.sendBox.opacity), SEND_BOX_OPACITY_OPTIONS, value => {
-        formState.sendBox.opacity = Number(value);
-      })
-    ], "send")
-  );
-
-  body.append(section("译文外观", [
-    preview,
-    selectField("译文位置", formState.style.position, TRANSLATION_POSITION_OPTIONS, value => {
-      formState.style.position = value;
-    }),
-    toggleRow("显示译文背景", formState.style.background, value => {
-      formState.style.background = value;
-      updateStylePreview();
-    }),
-    selectField("译文样式", formState.style.emphasis, STYLE_EMPHASIS_OPTIONS, value => {
-      formState.style.emphasis = value;
-      updateStylePreview();
-    }),
-    colorSwatchField("背景色", formState.style.backgroundColor, BACKGROUND_COLOR_OPTIONS, value => {
-      formState.style.backgroundColor = value;
-      updateStylePreview();
-    }),
-    colorSwatchField("译文颜色", formState.style.textColor, TEXT_COLOR_OPTIONS, value => {
-      formState.style.textColor = value;
-      updateStylePreview();
-    }),
-    selectField("字体", formState.style.fontFamily, optionsWithCurrentValue(FONT_OPTIONS, formState.style.fontFamily), value => {
-      formState.style.fontFamily = value;
-      updateStylePreview();
-    })
-  ], "style"));
-  syncCustomPromptVisibility();
-
-  openConfig.addEventListener("click", async () => {
+  refreshModels.addEventListener("click", refreshModelList);
+  testConnection.addEventListener("click", async () => {
+    if (testConnectionInFlight) return;
+    testConnectionInFlight = true;
+    testConnection.setLoading(true);
+    connectionStatus.update("");
+    const captured = context(),
+      request = currentSettingsRequest();
     try {
-      await nativeApi.openSettingsFile();
+      unwrap(await nativeApi.testConnection(request));
+      if (generation === settingsPageGeneration && context() === captured)
+        feedback(
+          msg("plugin.connectionSuccess", { origin: new URL(normalizeEndpoint(request.settings.model.baseUrl)).origin }),
+          "success",
+        );
     } catch (error) {
-      console.error("[Babel] Failed to open settings directory:", error);
+      if (generation === settingsPageGeneration && context() === captured)
+        feedback(
+          errorMessage(error),
+          "failure",
+        );
+    } finally {
+      testConnectionInFlight = false;
+      testConnection.setLoading(false);
     }
   });
-
+  renderProviderSelect();
+  renderProtocolField();
+  renderProviderFields();
+  renderApiKeyField();
+  const updateStylePreview = () => {
+    refreshStylePreview(preview, formState.style);
+    changed();
+  };
+  customPromptHost.appendChild(
+    inputField(
+      msg("plugin.customPrompt"),
+      "textarea",
+      formState.customPrompt,
+      (value) => {
+        formState.customPrompt = value;
+        changed();
+      },
+      { maxLength: 4000 },
+    ),
+  );
+  const syncCustomPromptVisibility = () => {
+    setRowVisible(customPromptHost, formState.translationStyle === "custom");
+  };
+  syncCustomPromptVisibility();
+  const pair = (left, right) => {
+    const row = div();
+    row.dataset.dtmPair = "true";
+    row.append(left, right);
+    return row;
+  };
+  const column = (child) => {
+    const row = div();
+    row.dataset.dtmPair = "true";
+    row.append(child);
+    return row;
+  };
+  const modelButtons = buttonRow([refreshModels, testConnection]);
+  modelButtons.dataset.dtmActionButtons = "true";
+  const modelActions = div();
+  modelActions.dataset.dtmActions = "true";
+  modelActions.append(keyActionsHost, modelButtons);
+  body.append(
+    section(
+      msg("plugin.section.general"),
+      [
+        toggleRow(msg("plugin.enabled"), formState.enabled, (value) => {
+          formState.enabled = value;
+          changed();
+        }),
+      ],
+      "general",
+    ),
+    section(
+      msg("plugin.section.model"),
+      [
+        pair(providerSelectHost, modelFieldHost),
+        pair(baseUrlFieldHost, apiKeyFieldHost),
+        httpHost,
+        protocolFieldHost,
+        keyStatus,
+        modelActions,
+        connectionStatus,
+      ],
+      "model",
+    ),
+    section(
+      msg("plugin.section.read"),
+      [
+        pair(
+          languageSelectField(
+            msg("plugin.readTarget"),
+            formState.model.targetLanguage,
+            (value) => {
+              formState.model.targetLanguage = value;
+              changed();
+            },
+          ),
+          languageSelectField(
+            msg("plugin.sendTarget"),
+            formState.model.sendLanguage,
+            (value) => {
+              formState.model.sendLanguage = value;
+              changed();
+            },
+          ),
+        ),
+        column(
+          selectField(
+            msg("plugin.translationStyle"),
+            formState.translationStyle,
+            TRANSLATION_STYLE_OPTIONS,
+            (value) => {
+              formState.translationStyle = value;
+              syncCustomPromptVisibility();
+              changed();
+            },
+          ),
+        ),
+        customPromptHost,
+        toggleRow(
+          msg("plugin.autoTranslate"),
+          formState.autoTranslate.enabled,
+          (value) => {
+            formState.autoTranslate.enabled = value;
+            changed();
+          },
+        ),
+        pauseStatus,
+        toggleRow(
+          msg("plugin.sendEnabled"),
+          formState.sendTranslation.enabled,
+          (value) => {
+            formState.sendTranslation.enabled = value;
+            changed();
+          },
+        ),
+        toggleRow(
+          msg("plugin.autoSend"),
+          formState.sendTranslation.enterToSend,
+          (value) => {
+            formState.sendTranslation.enterToSend = value;
+            changed();
+          },
+        ),
+      ],
+      "read",
+    ),
+    section(
+      msg("plugin.section.style"),
+      [
+        preview,
+        pair(
+          selectField(
+            msg("plugin.position"),
+            formState.style.position,
+            TRANSLATION_POSITION_OPTIONS,
+            (value) => {
+              formState.style.position = value;
+              changed();
+            },
+          ),
+          selectField(
+            msg("plugin.emphasis"),
+            formState.style.emphasis,
+            STYLE_EMPHASIS_OPTIONS,
+            (value) => {
+              formState.style.emphasis = value;
+              updateStylePreview();
+            },
+          ),
+        ),
+        toggleRow(msg("plugin.background"), formState.style.background, (value) => {
+          formState.style.background = value;
+          updateStylePreview();
+        }),
+        pair(
+          selectField(
+            msg("plugin.backgroundColor"),
+            formState.style.backgroundColor,
+            colorChoices(BACKGROUND_COLOR_OPTIONS, formState.style.backgroundColor),
+            (value) => {
+              formState.style.backgroundColor = value;
+              updateStylePreview();
+            },
+          ),
+          selectField(
+            msg("plugin.textColor"),
+            formState.style.textColor,
+            colorChoices(TEXT_COLOR_OPTIONS, formState.style.textColor),
+            (value) => {
+              formState.style.textColor = value;
+              updateStylePreview();
+            },
+          ),
+        ),
+        pair(
+          selectField(
+            msg("plugin.font"),
+            formState.style.fontFamily,
+            optionsWithCurrentValue(FONT_OPTIONS, formState.style.fontFamily),
+            (value) => {
+              formState.style.fontFamily = value;
+              updateStylePreview();
+            },
+          ),
+          selectField(
+            msg("plugin.opacity"),
+            String(formState.sendBox.opacity),
+            optionsWithCurrentValue(
+              SEND_BOX_OPACITY_OPTIONS,
+              String(formState.sendBox.opacity),
+            ),
+            (value) => {
+              formState.sendBox.opacity = Number(value);
+              changed();
+            },
+          ),
+        ),
+      ],
+      "style",
+    ),
+  );
+  async function updateCacheStatus() {
+    const readGeneration = ++cacheReadGeneration;
+    const pageGeneration = generation;
+    try {
+      const status = unwrap(await nativeApi.cacheStatus?.()) || {};
+      // A read that started before a newer clear result must not replace it.
+      if (readGeneration !== cacheReadGeneration || pageGeneration !== settingsPageGeneration) return;
+      if (status.error) cacheStatus.update(errorMessage(status.error), "critical");
+      else cacheStatus.update("");
+    } catch (error) {
+      if (readGeneration !== cacheReadGeneration || pageGeneration !== settingsPageGeneration) return;
+      cacheStatus.update(errorMessage(error), "critical");
+    }
+  }
   clearCache.addEventListener("click", async () => {
     if (clearCache.disabled) return;
     clearCache.disabled = true;
+    const pageGeneration = generation;
     try {
       await clearTranslationCache();
-      clearCache.flashLabel("已清除");
+      if (pageGeneration !== settingsPageGeneration) return;
+      cacheReadGeneration += 1;
+      cacheStatus.update("");
+      showNativeToast(msg("plugin.cacheCleared"), "success");
     } catch (error) {
-      showNativeToast(publicError(error), "failure");
+      if (pageGeneration !== settingsPageGeneration) return;
+      cacheReadGeneration += 1;
+      cacheStatus.update(errorMessage(error), "critical");
     } finally {
-      clearCache.disabled = false;
+      if (pageGeneration === settingsPageGeneration) clearCache.disabled = false;
     }
   });
-
+  openConfig.addEventListener("click", async () => {
+    const pageGeneration = generation;
+    try {
+      unwrap(await nativeApi.openSettingsFile());
+      if (pageGeneration !== settingsPageGeneration) return;
+      openConfigStatus.update("");
+    } catch (error) {
+      if (pageGeneration !== settingsPageGeneration) return;
+      openConfigStatus.update(errorMessage(error), "critical");
+    }
+  });
+  discard.addEventListener("click", () => {
+    retainedDraft = null;
+    settingsForm = null;
+    closeSettingsPanel();
+    openSettingsPanel(activeSettingsKey);
+  });
   save.addEventListener("click", async () => {
     if (save.disabled) return;
-    // Saving is instant local I/O: no spinner, no progress/success toast. Only a
-    // double-submit guard, and a toast if it actually fails.
-    save.disabled = true;
-    const request = currentSettingsRequest();
-    const stagedKey = formState.__apiKey;
+    saving = true;
+    lastSaveSuccess = false;
+    const submitted = preferences(),
+      submittedKey = formState.__apiKey,
+      submittedAction = keyAction;
+    const overwrite = presentedConflict().overwrite;
+    const request = {
+      baseSettingsRevision: overwrite ? observedRevision : baseRevision,
+      settings: submitted,
+      key: {
+        action: submittedAction,
+        value: submittedAction === "replace" ? submittedKey : undefined,
+      },
+    };
+    syncState();
     try {
-      if (request.apiKey) await nativeApi.setApiKey({ provider: request.settings.model.provider, apiKey: request.apiKey });
-      settings = await nativeApi.saveSettings(request.settings);
-      ensureSendBox();
+      const result = unwrap(await nativeApi.saveConfig(request));
+      applySnapshot(result);
       applyAutoTranslateSettings();
+      ensureSendBox();
       refreshTranslationStyles();
-      providerApiKeyStatus = typeof nativeApi.getApiKeyStatus === "function"
-        ? await nativeApi.getApiKeyStatus()
-        : providerApiKeyStatus;
-      if (generation !== settingsPageGeneration) return;
-      renderProviderSelect();
-      if (formState.model.provider === request.settings.model.provider && formState.__apiKey === stagedKey) renderApiKeyField();
-      save.flashLabel("已保存");
+      const savedSettings = normalizeSettings({
+        ...submitted,
+        sendBox: {
+          ...submitted.sendBox,
+          x: settings.sendBox.x,
+          y: settings.sendBox.y,
+          width: settings.sendBox.width,
+        },
+      });
+      // A save that finishes after this form closed may reconcile only that form's draft.
+      if (generation !== settingsPageGeneration) {
+        reconcileRetainedDraft(generation, savedSettings, settingsRevision);
+        return;
+      }
+      base = savedSettings;
+      Object.assign(formState.sendBox, {
+        x: settings.sendBox.x,
+        y: settings.sendBox.y,
+        width: settings.sendBox.width,
+      });
+      baseRevision = settingsRevision;
+      observedRevision = settingsRevision;
+      conflict = false;
+      if (
+        submittedAction !== "keep" &&
+        formState.__apiKey === submittedKey &&
+        keyAction === submittedAction
+      ) {
+        formState.__apiKey = "";
+        keyAction = "keep";
+        renderApiKeyField();
+      }
+      lastSaveSuccess = true;
+      showNativeToast(msg("plugin.savedToast"), "success");
     } catch (error) {
-      showNativeToast(publicError(error), "failure");
+      if (error.code === "CONFLICT") {
+        await loadSettingsSafe();
+        observedRevision = settingsRevision;
+        conflict = true;
+      }
+      lastSaveError = errorMessage(error);
+      lastSaveSuccess = false;
     } finally {
-      save.disabled = false;
+      saving = false;
+      if (generation === settingsPageGeneration) syncState();
     }
   });
-
-  const saveRow = settingRow(buttonRow([openConfig, clearCache, save]));
-  saveRow.id = settingsSectionId("save");
-  body.lastElementChild.append(saveRow, aboutFooter());
-  settingsSections = new Map(SETTINGS_SECTION_NAV.map(({ key }) => [key, body.querySelector(`#${settingsSectionId(key)}`)]));
+  settingsForm = {
+    externalChange: () => {
+      observedRevision = settingsRevision;
+      if (saving) return;
+      if (JSON.stringify(base) === JSON.stringify(settings)) {
+        // No meaningful external change: only ignored legacy fields may differ,
+        // so the open draft stays authoritative.
+        base = JSON.parse(JSON.stringify(settings)); baseRevision = settingsRevision;
+        syncState(); return;
+      }
+      if (dirty()) conflict = true;
+      else {
+        retainedDraft = null;
+        settingsForm = null;
+        closeSettingsPanel();
+        openSettingsPanel(activeSettingsKey);
+      }
+      syncState();
+    },
+    draft: () =>
+      dirty()
+        ? { settings: preferences(), base, revision: baseRevision, formId: generation }
+        : null,
+    /* @dtm-test-only:start */
+    keyActionForTests: () => keyAction,
+    /* @dtm-test-only:end */
+    reportReadNotice: (message) => {
+      pauseStatus.update(message || "");
+    },
+    refreshCacheStatus: () => updateCacheStatus(),
+    dispose: () => {
+      formState.__apiKey = "";
+      keyAction = "keep";
+    },
+  };
+  sharedFormFooter = div();
+  sharedFormFooter.append(
+    actionRow([saveStatus, openConfigStatus, cacheStatus], [openConfig, clearCache, discard, save]),
+    aboutFooter(generation),
+  );
+  sharedFormFooter.style.cssText =
+    "display:flex;flex-direction:column;gap:16px";
+  settingsSections = new Map(
+    SETTINGS_SECTION_NAV.map(({ key }) => [
+      key,
+      body.querySelector(`#${settingsSectionId(key)}`),
+    ]),
+  );
+  settingsSections.get(activeSettingsKey)?.appendChild(sharedFormFooter);
+  syncState();
+  updateCacheStatus();
   mountSettingsSections();
+}
+function isLoopback(host) {
+  return (
+    host === "localhost" ||
+    host === "[::1]" ||
+    /^127\.\d+\.\d+\.\d+$/.test(host)
+  );
+}
+function statusField(message, tone = "default") {
+  const host = reactControlHost("status");
+  let shown = null;
+  host.update = (value, nextTone = "default") => {
+    let text = value,
+      resolved = nextTone;
+    if (value && typeof value === "object" && !value.__dtmText && Object.prototype.hasOwnProperty.call(value, "text")) {
+      text = value.text;
+      resolved = value.tone || nextTone;
+    }
+    const visible = Boolean(text && (text.__dtmText || String(text).length));
+    const signature = `${text && text.__dtmText ? text.id : ""}\n${text && text.__dtmText ? JSON.stringify(text.params || {}) : String(visible ? text : "")}\n${resolved}`;
+    setRowVisible(host, visible);
+    if (signature === shown) return;
+    shown = signature;
+    mountDiscordReactControl(host, {
+      kind: "status",
+      helperText: visible ? text : "",
+      tone: resolved,
+      live: resolved === "critical" ? "assertive" : "polite",
+      role: resolved === "critical" ? "alert" : "status",
+    });
+  };
+  host.update(message, tone);
+  return host;
 }
 
 function mountSettingsSections() {
+  if (sharedFormFooter && settingsSections.get(activeSettingsKey))
+    settingsSections.get(activeSettingsKey).appendChild(sharedFormFooter);
   for (const [key, content] of settingsSections) {
     const slot = document.getElementById(`dtm-settings-slot-${key}`);
     if (!slot || !content || content.parentElement === slot) continue;
     slot.appendChild(content);
     for (const host of content.querySelectorAll("[data-dtm-control-id]")) {
-      requestMainWorldControl(host, host.__dtmControlSpec);
+      requestMainWorldControl(host, host.__dtmControlSource);
     }
   }
 }
 
 function closeSettingsPanel() {
+  // A live form decides retention. A clean form returns null and drops the previous draft.
+  if (settingsForm) retainedDraft = settingsForm.draft();
+  settingsForm?.dispose();
+  settingsForm = null;
+  sharedFormFooter = null;
   settingsPageOpen = false;
   settingsPageGeneration += 1;
-  for (const content of settingsSections.values()) disposeControls(content);
+  for (const content of settingsSections.values()) {
+    disposeControls(content);
+    content.remove();
+  }
   settingsSections.clear();
   mainWorldControlCallbacks.clear();
 }
 
-const AUTHOR_X_URL = "https://x.com/unflwMaige";
+const SUPPORTER_A = "Lallen 女士";
+const SUPPORTER_B = "Silva 先生";
 
-const BABEL_ICON_PATHS = '<path d="M10 4h4l1 2.6H9z"/>'
-  + '<path d="M9 8.2h6l1.2 2.8H7.8z"/>'
-  + '<path d="M7.6 12.4h8.8l1.3 3H6.3z"/>'
-  + '<path d="M6 17h12l1.4 3.4H4.6z"/>'
-  + '<path d="M11 20.4v-1.6a1 1 0 0 1 2 0v1.6"/>';
+const BABEL_ICON_PATHS =
+  '<path d="M10 4h4l1 2.6H9z"/>' +
+  '<path d="M9 8.2h6l1.2 2.8H7.8z"/>' +
+  '<path d="M7.6 12.4h8.8l1.3 3H6.3z"/>' +
+  '<path d="M6 17h12l1.4 3.4H4.6z"/>' +
+  '<path d="M11 20.4v-1.6a1 1 0 0 1 2 0v1.6"/>';
 
-function aboutFooter() {
+function aboutFooter(pageGeneration) {
   const wrap = div("dtm-about");
 
   const title = div("dtm-about-title");
-  title.textContent = "Babel · 巴别";
+  const name = div();
+  name.textContent = "Babel · 巴别";
+  const version = div("dtm-about-version");
+  version.textContent = `v${BABEL_VERSION}`;
+  title.append(name, version);
 
   const desc = div("dtm-about-desc");
-  desc.textContent = "在 Discord 里双击消息即时翻译，也能把你输入的内容翻译后再发送。";
+  chromeText(desc, msg("plugin.about.description"));
 
   const why = div("dtm-about-why");
-  why.textContent = "取名 Babel，源自通天的「巴别塔」——传说人类因语言不通而未能建成它；这个插件想做的，正是抹平 Discord 里的语言之墙。";
+  chromeText(why, msg("plugin.about.why"));
 
-  const meta = div("dtm-about-meta");
-  meta.appendChild(document.createTextNode(`v${BABEL_VERSION} · 作者 麦格 · `));
-  const link = document.createElement("a");
-  link.className = "dtm-about-link";
-  link.href = AUTHOR_X_URL;
-  link.setAttribute("role", "link");
-  link.textContent = "在 X 上关注我";
-  link.addEventListener("click", event => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (nativeApi && typeof nativeApi.openExternal === "function") nativeApi.openExternal(AUTHOR_X_URL);
-  });
-  meta.appendChild(link);
+  wrap.append(title, desc, why);
 
-  wrap.append(title, desc, why, meta);
-
-  // Manual update check: click to query GitHub and show the result inline. This avoids a
-  // startup network call and the async-timing problem of an auto-check (the footer would
-  // render before the check resolved and then never update).
   const updateRow = div("dtm-about-update");
-  const checkLink = document.createElement("a");
-  checkLink.className = "dtm-about-link";
-  checkLink.setAttribute("role", "button");
-  checkLink.textContent = "检查更新";
-  const result = document.createElement("span");
-  result.className = "dtm-about-update-status";
-
-  let checking = false;
-  checkLink.addEventListener("click", async event => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (checking) return;
-    checking = true;
-    result.textContent = " · 检查中…";
+  const updateButton = button(msg("plugin.update.check"));
+  updateButton.setLive("polite");
+  let phase = "idle";
+  let latestVersion = "";
+  let updateUrl = "";
+  let busy = false;
+  const paintUpdate = () => {
+    const label = phase === "checking" ? msg("plugin.update.checking")
+      : phase === "current" ? msg("plugin.update.current")
+      : phase === "available" ? msg("plugin.update.available", { version: latestVersion })
+      : phase === "check-failed" ? msg("plugin.update.failed")
+      : phase === "open-failed" ? msg("plugin.update.openFailed")
+      : msg("plugin.update.check");
+    updateButton.setLabel(label);
+    updateButton.setLoading(phase === "checking");
+    updateButton.setBusy(busy);
+  };
+  const alive = () => pageGeneration === settingsPageGeneration;
+  async function runCheck() {
+    if (busy) return;
+    busy = true;
+    phase = "checking";
+    paintUpdate();
     try {
-      const info = nativeApi && typeof nativeApi.checkUpdate === "function" ? await nativeApi.checkUpdate() : null;
-      if (info && info.ok && info.updateAvailable) {
-        result.textContent = ` · 发现新版本 v${info.latest} · `;
-        const download = document.createElement("a");
-        download.className = "dtm-about-link";
-        download.setAttribute("role", "link");
-        download.textContent = "点击下载";
-        download.addEventListener("click", downloadEvent => {
-          downloadEvent.preventDefault();
-          downloadEvent.stopPropagation();
-          if (nativeApi && typeof nativeApi.openExternal === "function") nativeApi.openExternal(info.url);
-        });
-        result.appendChild(download);
-      } else if (info && info.ok) {
-        result.textContent = ` · 已是最新版本（v${BABEL_VERSION}）`;
-      } else {
-        result.textContent = " · 检查失败，请稍后重试";
-      }
-    } catch (_error) {
-      result.textContent = " · 检查失败，请稍后重试";
+      const info = unwrap(await nativeApi.checkUpdate());
+      if (!alive()) return;
+      if (info?.updateAvailable) {
+        if (typeof info.url === "string" && info.url) {
+          latestVersion = String(info.latest || "").replace(/^v/i, "");
+          updateUrl = info.url;
+          phase = "available";
+        } else phase = "check-failed";
+      } else phase = "current";
+    } catch (_) {
+      if (!alive()) return;
+      phase = "check-failed";
     } finally {
-      checking = false;
+      if (alive()) {
+        busy = false;
+        paintUpdate();
+      }
     }
+  }
+  async function runOpen() {
+    if (busy || !updateUrl) return;
+    busy = true;
+    paintUpdate();
+    try {
+      unwrap(await nativeApi.openExternal(updateUrl));
+      if (!alive()) return;
+      phase = "available";
+    } catch (error) {
+      if (!alive()) return;
+      phase = "open-failed";
+      showNativeToast(errorMessage(error), "failure");
+    } finally {
+      if (alive()) {
+        busy = false;
+        paintUpdate();
+      }
+    }
+  }
+  updateButton.addEventListener("click", () => {
+    if (busy) return;
+    if (phase === "available" || phase === "open-failed") return runOpen();
+    return runCheck();
   });
-  updateRow.append(checkLink, result);
+  updateRow.append(buttonRow([updateButton]));
   wrap.append(updateRow);
-
+  const thanks = div("dtm-about-thanks");
+  chromeText(thanks, msg("plugin.about.thanks", { supporterA: SUPPORTER_A, supporterB: SUPPORTER_B }));
+  wrap.append(thanks);
   return wrap;
 }
 
 function onMessageDoubleClick(event) {
   if (!settings || !settings.enabled) return;
-  if (event.target.closest(`[data-dtm-section-key], #${SEND_BOX_ID}, .dtm-translation-block`)) return;
+  if (
+    event.target.closest(
+      `[data-dtm-section-key], #${SEND_BOX_ID}, .dtm-translation-block`,
+    )
+  )
+    return;
 
   const message = findMessage(event.target);
   if (!message) return;
@@ -831,11 +1575,9 @@ function onMessageDoubleClick(event) {
     event.preventDefault();
     event.stopPropagation();
     clearTextSelection();
-    messageOperations.delete(message);
-    removeAllTranslations(message);
+    dismissMessage(message);
     // Remember the dismissal so periodic restore from cache doesn't bring it back.
     dismissedTranslations.add(getMessageId(message));
-    translatedMessages.delete(getMessageId(message));
     return;
   }
 
@@ -853,81 +1595,136 @@ function onMessageDoubleClick(event) {
 // message highlighted. preventDefault can't stop that (it happens at mousedown), so just
 // clear the selection once we've claimed the double-click as a translate gesture.
 function clearTextSelection() {
-  const selection = typeof window !== "undefined" && typeof window.getSelection === "function"
-    ? window.getSelection()
-    : null;
-  if (selection && typeof selection.removeAllRanges === "function") selection.removeAllRanges();
+  const selection =
+    typeof window !== "undefined" && typeof window.getSelection === "function"
+      ? window.getSelection()
+      : null;
+  if (selection && typeof selection.removeAllRanges === "function")
+    selection.removeAllRanges();
 }
 
 async function translateMessage(message, automatic = false) {
-  const operation = Symbol();
-  messageOperations.set(message, operation);
+  if (!settings.enabled) return;
+  const id = getMessageId(message),
+    token = Symbol();
+  const previous = displayState.get(id);
+  if (previous?.active.size) await requests?.cancel([...previous.active]);
+  const record = displayState.set(id, {
+    token,
+    context: readDisplayContext,
+    revision: executionRevision,
+    automatic,
+    units: new Map(),
+    active: new Set(),
+  });
   for (const unit of getMessageUnits(message)) {
-    if (messageOperations.get(message) !== operation) return;
+    if (displayState.get(id)?.token !== token || !settings.enabled) return;
     if (automatic && shouldSkipSameLanguage(unit.text)) continue;
-    await translateUnit(message, unit, operation);
-  }
-}
-
-async function translateUnit(message, unit, operation) {
-  const key = getUnitCacheKey(unit);
-  if (settings.readTranslation.cache && translationCache.has(key)) {
-    translatedMessages.add(getMessageId(message));
-    renderUnitTranslation(message, unit, translationCache.get(key), { cacheHit: true });
-    return;
-  }
-
-  const placeholder = renderUnitTranslation(message, unit, "正在翻译...");
-  try {
-    let pending = pendingTranslations.get(key);
-    if (!pending) {
-      const generation = translationCacheGeneration;
-      pending = Promise.resolve(nativeApi.translate({ direction: "read", text: unit.text }))
-        .then(result => {
-          if (generation === translationCacheGeneration) cacheTranslation(key, result.text);
-          return result;
-        })
-        .finally(() => {
-          if (pendingTranslations.get(key) === pending) pendingTranslations.delete(key);
+    const state = {
+      source: unit.text,
+      status: "pending",
+      text: "",
+      revision: executionRevision,
+    };
+    record.units.set(unit.kind, state);
+    const placeholder = renderUnitTranslation(message, unit, msg("plugin.loading"), { chrome: true });
+    const operation = requests.request({
+      direction: "read",
+      text: unit.text,
+      priority: automatic ? "background" : "foreground",
+    });
+    if (operation.requestId) record.active.add(operation.requestId);
+    if (placeholder) chromeText(placeholder, msg("plugin.loading"));
+    try {
+      const result = await operation.promise;
+      const live = findLiveMessage(id);
+      if (
+        !settings.enabled ||
+        displayState.get(id)?.token !== token ||
+        record.revision !== executionRevision
+      ) {
+        // This unit's work was detached or superseded while its result was
+        // already on its way (cancellation cannot recall a delivered native
+        // result): drop the pending state and placeholder so neither a loading
+        // block nor a restorable canceled result survives.
+        discardDetachedUnit(id, message, record, state, unit);
+        continue;
+      }
+      state.text = result.text;
+      state.status = "success";
+      const currentUnit =
+        live &&
+        getMessageUnits(live).find((candidate) => candidate.kind === unit.kind);
+      if (!currentUnit || currentUnit.text !== unit.text) {
+        findUnitBlock(live || message, unit.kind)?.remove();
+        continue;
+      }
+      renderUnitTranslation(live, currentUnit, result.text, {
+        cacheHit: result.cacheHit,
+      });
+      settingsForm?.reportReadNotice?.("");
+    } catch (error) {
+      const live = findLiveMessage(id),
+        currentUnit =
+          live &&
+          getMessageUnits(live).find(
+            (candidate) => candidate.kind === unit.kind,
+          );
+      if (
+        settings.enabled &&
+        displayState.get(id)?.token === token &&
+        record.revision === executionRevision &&
+        currentUnit?.text === unit.text
+      ) {
+        state.status = "error";
+        state.error = errorMessage(error);
+        state.text = "";
+        state.retry = !["CANCELED", "STALE_REVISION", "BUSY_SKIPPED", "PAUSED"].includes(error.code);
+        const block = renderUnitTranslation(live, currentUnit, state.retry ? msg("plugin.retry", { message: state.error }) : state.error, {
+          isError: true, chrome: true,
         });
-      pendingTranslations.set(key, pending);
+
+        if (
+          error.code === "PAUSED" &&
+          pauseNoticeRevision !== executionRevision
+        ) {
+          pauseNoticeRevision = executionRevision;
+          showNativeToast(msg("plugin.error.PAUSED"), "failure");
+        }
+        if (!["CANCELED", "STALE_REVISION", "BUSY_SKIPPED"].includes(error.code))
+          settingsForm?.reportReadNotice?.(error.code === "PAUSED" ? msg("plugin.error.PAUSED") : errorMessage(error));
+      } else discardDetachedUnit(id, message, record, state, unit);
+    } finally {
+      record.active.delete(operation.requestId);
+      displayState.trim();
     }
-    const result = await pending;
-    // If the user dismissed the in-progress block while we waited, don't resurrect it.
-    if (messageOperations.get(message) !== operation || (placeholder && !placeholder.parentElement)) return;
-    translatedMessages.add(getMessageId(message));
-    renderUnitTranslation(message, unit, result.text);
-  } catch (error) {
-    if (messageOperations.get(message) !== operation || (placeholder && !placeholder.parentElement)) return;
-    renderUnitTranslation(message, unit, publicError(error), { isError: true });
   }
 }
 
-function cacheTranslation(key, text) {
-  translationCache.delete(key);
-  translationCache.set(key, text);
-  while (translationCache.size > MAX_TRANSLATION_CACHE) {
-    const oldest = translationCache.keys().next().value;
-    if (oldest === undefined) break;
-    translationCache.delete(oldest);
-  }
-  schedulePersistCache();
+// The unit settled (success or failure) but its work is no longer live: the
+// token was invalidated, the revision changed or the plugin turned off. Drop
+// this unit's pending state so no late result can be restored later, and remove
+// only the placeholder this record still owns — a newer operation on the same
+// message keeps its record, block and state untouched.
+function discardDetachedUnit(id, message, record, state, unit) {
+  if (record.units.get(unit.kind) === state) record.units.delete(unit.kind);
+  if (displayState.get(id) === record) findUnitBlock(message, unit.kind)?.remove();
 }
-
-// Empty the translation cache in memory and on disk. Already-displayed translations
-// stay (they're rendered); only the stored entries are cleared, so future re-views
-// will re-translate.
+function dismissMessage(message) {
+  const id = getMessageId(message),
+    record = displayState.get(id);
+  if (record) {
+    requests?.cancel([...record.active]);
+    record.token = Symbol();
+    record.units.clear();
+  }
+  removeAllTranslations(message);
+  dismissedTranslations.add(id);
+  if (dismissedTranslations.size > 500)
+    dismissedTranslations.delete(dismissedTranslations.values().next().value);
+}
 async function clearTranslationCache() {
-  translationCacheGeneration += 1;
-  pendingTranslations.clear();
-  translationCache.clear();
-  if (persistCacheTimer) {
-    clearTimeout(persistCacheTimer);
-    persistCacheTimer = 0;
-  }
-  if (nativeApi && typeof nativeApi.saveCache === "function") {
-    await nativeApi.saveCache({});
-  }
+  return unwrap(await nativeApi.clearCache());
 }
 
 // ---- Auto-translate ------------------------------------------------------------
@@ -935,12 +1732,38 @@ async function clearTranslationCache() {
 // scrolling through history must not turn a newer page of history into new arrivals.
 
 function visibleMessages() {
-  return Array.from(document.querySelectorAll("[id^='chat-messages-'], [data-list-item-id*='chat-messages']"));
+  return Array.from(
+    document.querySelectorAll(
+      "[id^='chat-messages-'], [data-list-item-id*='chat-messages']",
+    ),
+  );
 }
 
 function getCurrentChannelId() {
-  const match = String((typeof location !== "undefined" && location.pathname) || "").match(/\/channels\/[^/]+\/(\d+)/);
+  const match = String(
+    (typeof location !== "undefined" && location.pathname) || "",
+  ).match(/\/channels\/[^/]+\/(\d+)/);
   return match ? match[1] : "";
+}
+
+// Cancel automatic work at its source. The record token is invalidated BEFORE the
+// request IDs are canceled: a settling request can then neither render a stale
+// result nor let its unit loop start the next unit, and the canceled placeholder
+// is removed without a red error block. Only this record's request IDs are
+// canceled, so a provider job shared with a manual or send consumer stays alive
+// for that consumer. Re-detaching is free: canceled records drop their request
+// bookkeeping, so a later disabled maintenance pass adds no cancellation sweep.
+function detachAutomaticRecord(record) {
+  if (!record || !record.automatic || !record.active.size) return;
+  record.token = Symbol();
+  const requestIds = [...record.active];
+  record.active.clear();
+  requests?.cancel(requestIds);
+}
+
+function detachAutomaticWork() {
+  for (const record of displayState.records.values())
+    detachAutomaticRecord(record);
 }
 
 function syncCurrentChannel() {
@@ -948,10 +1771,11 @@ function syncCurrentChannel() {
   if (id === currentChannelId) return;
   currentChannelId = id;
   if (id && autoTranslateEnabled()) autoTranslateBaseline.set(id, Date.now());
-  // Drop queued auto-translate work for the channel we just left — no sense spending
-  // API calls translating messages that are no longer on screen. In-flight requests
-  // finish on their own; only the not-yet-started queue is cleared.
-  autoTranslateQueue = [];
+  // Detach this channel’s automatic consumers, including work already in flight.
+  document.getElementById(SEND_BOX_ID)?.__dtmCancelSend?.();
+  autoHandledMessages.clear();
+  autoEvictionFloor = 0n;
+  detachAutomaticWork();
 }
 
 function messageSnowflake(message) {
@@ -967,26 +1791,55 @@ function snowflakeTimestamp(snowflake) {
 }
 
 function autoTranslateEnabled() {
-  return Boolean(settings && settings.enabled && settings.autoTranslate && settings.autoTranslate.enabled);
+  return Boolean(
+    settings &&
+      settings.enabled &&
+      settings.autoTranslate &&
+      settings.autoTranslate.enabled,
+  );
 }
 
 // Called after settings save: when auto-translate is turned off, forget the baselines
 // so re-enabling later starts fresh from "now" instead of replaying a backlog.
 function applyAutoTranslateSettings() {
-  if (autoTranslateEnabled()) {
-    if (currentChannelId && !autoTranslateBaseline.has(currentChannelId)) {
-      autoTranslateBaseline.set(currentChannelId, Date.now());
-    }
-    return;
+  if (!settings.enabled) {
+    requests?.cancel();
+    for (const block of document.querySelectorAll(".dtm-translation-block"))
+      block.remove();
+    domWatch?.stop();
+    const sendBox = document.getElementById(SEND_BOX_ID);
+    removeSendBox(sendBox);
+  } else {
+    domWatch?.start();
   }
-  autoTranslateBaseline.clear();
-  autoHandledMessages.clear();
-  autoTranslateQueue = [];
+  if (autoTranslateEnabled()) {
+    if (currentChannelId && !autoTranslateBaseline.has(currentChannelId))
+      autoTranslateBaseline.set(currentChannelId, Date.now());
+  } else {
+    // Turning only auto-translate off detaches the queued and in-flight automatic
+    // work here at its source; rendered translations and manual/send consumers are
+    // kept. The sweep runs only while the automatic-work bookkeeping still
+    // reflects active auto translation (the channel baseline and handled ids):
+    // that is the enable→disable transition. Once it is cleared, later disabled
+    // maintenance passes never traverse the display records at all.
+    if (autoTranslateBaseline.size || autoHandledMessages.size)
+      detachAutomaticWork();
+    autoTranslateBaseline.clear();
+    autoHandledMessages.clear();
+    autoEvictionFloor = 0n;
+  }
 }
 
 function shouldSkipSameLanguage(text) {
-  if (!settings.autoTranslate || settings.autoTranslate.skipSameLanguage === false) return false;
-  return textMatchesLanguage(text, settings.model.targetLanguage);
+  if (
+    !settings.autoTranslate ||
+    settings.autoTranslate.skipSameLanguage === false
+  )
+    return false;
+  return (
+    !hasLetters(text) ||
+    textMatchesLanguage(text, settings.model.targetLanguage)
+  );
 }
 
 function runAutoTranslate(messages = visibleMessages()) {
@@ -996,13 +1849,22 @@ function runAutoTranslate(messages = visibleMessages()) {
   if (!channelId) return;
 
   const threshold = autoTranslateBaseline.get(channelId);
-  for (const message of messages) {
+  for (const message of [...messages].sort((a, b) => {
+    const x = BigInt(messageSnowflake(a) || 0),
+      y = BigInt(messageSnowflake(b) || 0);
+    return x < y ? -1 : x > y ? 1 : 0;
+  })) {
     const id = getMessageId(message);
     if (!id || autoHandledMessages.has(id)) continue;
     // Belongs to this channel and is newer than the baseline.
     if (id.indexOf(channelId) === -1) continue;
     const snowflake = messageSnowflake(message);
-    if (!snowflake || snowflakeTimestamp(snowflake) <= threshold) continue;
+    if (
+      !snowflake ||
+      BigInt(snowflake) <= autoEvictionFloor ||
+      snowflakeTimestamp(snowflake) <= threshold
+    )
+      continue;
     if (dismissedTranslations.has(id)) continue;
     if (findAnyTranslationBlock(message)) {
       autoHandledMessages.add(id);
@@ -1010,30 +1872,18 @@ function runAutoTranslate(messages = visibleMessages()) {
     }
     if (getMessageUnits(message).length === 0) continue;
     autoHandledMessages.add(id);
-    enqueueAutoTranslate(message);
+    autoTranslateMessage(message);
   }
 
-  if (autoHandledMessages.size > 4000) autoHandledMessages.clear();
-}
-
-// Auto-translate runs new messages through a small concurrency-limited queue, so a
-// burst of messages can't fire a burst of parallel API calls (rate-limit / cost
-// protection). Manual double-click stays immediate; this only gates the automatic path.
-function enqueueAutoTranslate(message) {
-  autoTranslateQueue.push(message);
-  pumpAutoTranslateQueue();
-}
-
-function pumpAutoTranslateQueue() {
-  while (autoTranslateActive < AUTO_TRANSLATE_CONCURRENCY && autoTranslateQueue.length > 0) {
-    const message = autoTranslateQueue.shift();
-    autoTranslateActive += 1;
-    Promise.resolve(autoTranslateMessage(message))
-      .catch(() => {})
-      .then(() => {
-        autoTranslateActive -= 1;
-        pumpAutoTranslateQueue();
-      });
+  while (autoHandledMessages.size > 2000) {
+    const lowest = [...autoHandledMessages].sort((a, b) => {
+      const x = BigInt(a.match(/(\d+)$/)?.[1] || 0),
+        y = BigInt(b.match(/(\d+)$/)?.[1] || 0);
+      return x < y ? -1 : x > y ? 1 : 0;
+    })[0];
+    autoHandledMessages.delete(lowest);
+    const floor = BigInt(lowest.match(/(\d+)$/)?.[1] || 0);
+    if (floor > autoEvictionFloor) autoEvictionFloor = floor;
   }
 }
 
@@ -1046,20 +1896,28 @@ function findMessage(target) {
   for (let i = 0; node && i < 10; i += 1, node = node.parentElement) {
     const id = node.getAttribute("id") || "";
     const listId = node.getAttribute("data-list-item-id") || "";
-    if (id.includes("chat-messages") || listId.includes("chat-messages")) return node;
+    if (id.includes("chat-messages") || listId.includes("chat-messages"))
+      return node;
   }
 
-  return target.closest("[id^='chat-messages-'], [data-list-item-id*='chat-messages'], [class*='messageListItem']");
+  return target.closest(
+    "[id^='chat-messages-'], [data-list-item-id*='chat-messages'], [class*='messageListItem']",
+  );
 }
 
 function messageContentEl(message, quote) {
   // The actual message body. Query separately (not one comma selector) so a reply's
   // quoted preview — which also has a [class*='markup'] earlier in the DOM — never
   // wins, and explicitly skip anything inside the quote preview.
-  const insideQuote = el => Boolean(quote && el && typeof quote.contains === "function" && quote.contains(el));
+  const insideQuote = (el) =>
+    Boolean(
+      quote && el && typeof quote.contains === "function" && quote.contains(el),
+    );
   const byId = message.querySelector("[id^='message-content-']");
   if (byId && !insideQuote(byId)) return byId;
-  for (const el of Array.from(message.querySelectorAll("[class*='messageContent'], [class*='markup']"))) {
+  for (const el of Array.from(
+    message.querySelectorAll("[class*='messageContent'], [class*='markup']"),
+  )) {
     if (!insideQuote(el)) return el;
   }
   return null;
@@ -1068,8 +1926,10 @@ function messageContentEl(message, quote) {
 function replyQuoteEl(message) {
   // The "replying to …" preview row (smaller text). Discord hashes class suffixes,
   // so match on the stable id prefix / class substrings; best-effort + fail-safe.
-  return message.querySelector("[id^='message-reply-context-']")
-    || message.querySelector("[class*='repliedMessage']");
+  return (
+    message.querySelector("[id^='message-reply-context-']") ||
+    message.querySelector("[class*='repliedMessage']")
+  );
 }
 
 function unitText(el) {
@@ -1077,36 +1937,63 @@ function unitText(el) {
 }
 
 // A message is 1–2 translatable units: an optional quoted preview, plus the body.
+// Only recognized actual text qualifies: the container fallbacks are gone, because
+// the preview row and the whole message also carry author, time and attachment
+// metadata that must never be sent for translation. A missing or empty unit is
+// simply skipped.
 function getMessageUnits(message) {
   const units = [];
   const quote = replyQuoteEl(message);
   if (quote) {
-    const quoteText = unitText(quote.querySelector("[class*='repliedTextContent'], [class*='repliedText']") || quote);
+    const quoteText = unitText(
+      quote.querySelector(
+        "[class*='repliedTextContent'], [class*='repliedText']",
+      ),
+    );
     // The quote译文 is anchored right under the (block-level) preview row.
-    if (quoteText) units.push({ kind: "quote", anchor: quote, text: quoteText });
+    if (quoteText)
+      units.push({ kind: "quote", anchor: quote, text: quoteText });
   }
   const content = messageContentEl(message, quote);
-  const bodyText = unitText(content) || (quote ? "" : unitText(message));
+  const bodyText = unitText(content);
   // The body译文 always appends to the bottom of the message — a safe, block-level
   // spot — never anchored to the (possibly inline) content element.
-  if (bodyText) units.push({ kind: "content", anchor: null, source: content, text: bodyText });
+  if (bodyText)
+    units.push({
+      kind: "content",
+      anchor: null,
+      source: content,
+      text: bodyText,
+    });
   return units;
 }
 
 function getMessageId(message) {
-  return message.getAttribute("id") || message.getAttribute("data-list-item-id") || "";
+  return (
+    message.getAttribute("id") ||
+    message.getAttribute("data-list-item-id") ||
+    ""
+  );
 }
 
-// Share results across messages only when the effective model and actual prompts match.
-function getUnitCacheKey(unit) {
-  return createHash("sha256").update(JSON.stringify({
-    model: resolveModelConfig(settings.model),
-    messages: buildTranslationMessages({ text: unit.text, direction: "read", settings })
-  })).digest("hex");
+// The async result paths resolve the live message with the same identity as
+// getMessageId: the DOM node can be replaced or removed while a request is in
+// flight (virtualized lists recycle nodes), so look it up again instead of
+// holding the original — first the cheap element-id hit, then a matching id
+// among the visible messages for data-list-item-id-only nodes.
+function findLiveMessage(id) {
+  if (!id) return null;
+  const direct = document.getElementById(id);
+  if (direct && direct.isConnected !== false) return direct;
+  return (
+    visibleMessages().find((message) => getMessageId(message) === id) || null
+  );
 }
 
 function findUnitBlock(message, kind) {
-  for (const block of Array.from(message.querySelectorAll(".dtm-translation-block"))) {
+  for (const block of Array.from(
+    message.querySelectorAll(".dtm-translation-block"),
+  )) {
     if (block.dataset && block.dataset.dtmUnit === kind) return block;
   }
   return null;
@@ -1117,32 +2004,60 @@ function findAnyTranslationBlock(message) {
 }
 
 function removeAllTranslations(message) {
-  for (const block of Array.from(message.querySelectorAll(".dtm-translation-block"))) block.remove();
+  for (const block of Array.from(
+    message.querySelectorAll(".dtm-translation-block"),
+  ))
+    block.remove();
 }
 
 function renderUnitTranslation(message, unit, text, options = {}) {
+  if (!settings.enabled) return null;
   const isError = Boolean(options.isError);
   let block = findUnitBlock(message, unit.kind);
   if (!block) {
     block = document.createElement("div");
     block.className = "dtm-translation-block";
     block.dataset.dtmUnit = unit.kind;
+    block.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (block.dataset.dtmError === "true") translateMessage(message);
+      else dismissMessage(message);
+    });
   }
   placeTranslationBlock(message, unit, block);
   block.dataset.dtmError = isError ? "true" : "false";
   block.dataset.dtmCacheHit = options.cacheHit ? "true" : "false";
-  block.textContent = text;
+  block.__dtmChrome = Boolean(options.chrome || isError);
+  if (block.__dtmChrome) chromeText(block, text);
+  else {
+    clearChrome(block);
+    block.textContent = text;
+    block.lang = translationTag(settings.model.targetLanguage);
+  }
   applyTranslationStyle(block, unit.kind === "quote");
   return block;
 }
 
 function placeTranslationBlock(message, unit, block) {
   const above = settings.style.position === "above";
-  if (unit.anchor && typeof unit.anchor.insertAdjacentElement === "function" && unit.anchor.parentElement) {
-    unit.anchor.insertAdjacentElement(above ? "beforebegin" : "afterend", block);
+  if (
+    unit.anchor &&
+    typeof unit.anchor.insertAdjacentElement === "function" &&
+    unit.anchor.parentElement
+  ) {
+    unit.anchor.insertAdjacentElement(
+      above ? "beforebegin" : "afterend",
+      block,
+    );
     return;
   }
-  if (above && unit.source && typeof unit.source.insertAdjacentElement === "function" && unit.source.parentElement) {
+  if (
+    above &&
+    unit.source &&
+    typeof unit.source.insertAdjacentElement === "function" &&
+    unit.source.parentElement
+  ) {
     unit.source.insertAdjacentElement("beforebegin", block);
     return;
   }
@@ -1151,16 +2066,25 @@ function placeTranslationBlock(message, unit, block) {
 }
 
 function restoreVisibleTranslations(messages = visibleMessages()) {
-  if (!settings || !settings.readTranslation.cache || translationCache.size === 0) return;
+  if (!settings.enabled) return;
   for (const message of messages) {
-    const id = getMessageId(message);
-    // Restore only messages the user actually translated — never bleed a cached
-    // translation onto a different message that merely shares the same text.
-    if (!translatedMessages.has(id) || dismissedTranslations.has(id)) continue;
+    const id = getMessageId(message),
+      record = displayState.get(id);
     for (const unit of getMessageUnits(message)) {
-      if (findUnitBlock(message, unit.kind)) continue;
-      const key = getUnitCacheKey(unit);
-      if (translationCache.has(key)) renderUnitTranslation(message, unit, translationCache.get(key), { cacheHit: true });
+      const state = record?.units.get(unit.kind);
+      if (
+        record?.revision !== executionRevision ||
+        state?.source !== unit.text
+      ) {
+        findUnitBlock(message, unit.kind)?.remove();
+        continue;
+      }
+      if (
+        state?.status === "success" &&
+        !dismissedTranslations.has(id) &&
+        !findUnitBlock(message, unit.kind)
+      )
+        renderUnitTranslation(message, unit, state.text);
     }
   }
 }
@@ -1168,17 +2092,34 @@ function restoreVisibleTranslations(messages = visibleMessages()) {
 function refreshTranslationStyles() {
   for (const block of document.querySelectorAll(".dtm-translation-block")) {
     const message = findMessage(block);
-    const unit = message && getMessageUnits(message).find(candidate => candidate.kind === block.dataset.dtmUnit);
+    const unit =
+      message &&
+      getMessageUnits(message).find(
+        (candidate) => candidate.kind === block.dataset.dtmUnit,
+      );
     if (message && unit) placeTranslationBlock(message, unit, block);
     applyTranslationStyle(block, block.dataset.dtmUnit === "quote");
   }
 }
 
 function applyTranslationStyle(block, small) {
-  applyTranslationStyleObject(block, settings.style, block.dataset.dtmError === "true", small);
+  applyTranslationStyleObject(
+    block,
+    settings.style,
+    block.dataset.dtmError === "true",
+    small,
+  );
   const above = settings.style.position === "above";
-  block.style.marginTop = above ? "0" : (settings.style.background === false ? "2px" : "6px");
-  block.style.marginBottom = above ? (settings.style.background === false ? "2px" : "6px") : "0";
+  block.style.marginTop = above
+    ? "0"
+    : settings.style.background === false
+      ? "2px"
+      : "6px";
+  block.style.marginBottom = above
+    ? settings.style.background === false
+      ? "2px"
+      : "6px"
+    : "0";
 }
 
 function applyTranslationStyleObject(block, style, isError, small) {
@@ -1190,18 +2131,24 @@ function applyTranslationStyleObject(block, style, isError, small) {
   }
 }
 
-const STYLE_MARKER_BAND = "linear-gradient(transparent 54%, color-mix(in srgb, currentColor 24%, transparent) 54%, color-mix(in srgb, currentColor 24%, transparent) 92%, transparent 92%)";
+const STYLE_MARKER_BAND =
+  "linear-gradient(transparent 54%, color-mix(in srgb, currentColor 24%, transparent) 54%, color-mix(in srgb, currentColor 24%, transparent) 92%, transparent 92%)";
 
 function translationPreviewStyle(style, isError) {
   const emphasis = style.emphasis || "none";
   const backgroundOn = style.background !== false;
-  const backgroundColor = style.backgroundColor === "auto"
-    ? "var(--background-surface-high, var(--background-secondary))" : style.backgroundColor;
+  const backgroundColor =
+    style.backgroundColor === "auto"
+      ? "var(--background-surface-high, var(--background-secondary))"
+      : style.backgroundColor;
   return {
     backgroundColor: backgroundOn ? backgroundColor : "transparent",
     backgroundImage: emphasis === "marker" ? STYLE_MARKER_BAND : "none",
-    color: isError ? "var(--text-feedback-critical, var(--text-danger))"
-      : style.textColor === "auto" ? automaticTextColor(style) : style.textColor,
+    color: isError
+      ? "var(--text-feedback-critical, var(--text-danger))"
+      : style.textColor === "auto"
+        ? automaticTextColor(style)
+        : style.textColor,
     opacity: emphasis === "light" ? "0.72" : "1",
     fontWeight: emphasis === "bold" ? "700" : "400",
     // No background → no bubble: drop the card padding/border/shadow and sit the
@@ -1214,17 +2161,22 @@ function translationPreviewStyle(style, isError) {
     fontFamily: style.fontFamily,
     fontSize: `${style.fontSize}px`,
     textDecorationLine: emphasisDecorationLine(emphasis),
-    textDecorationStyle: emphasis === "wavy" ? "wavy" : "solid"
+    textDecorationStyle: emphasis === "wavy" ? "wavy" : "solid",
   };
 }
 
 function automaticTextColor(style) {
-  const color = style.background !== false && /^#[0-9a-f]{6}$/i.test(style.backgroundColor || "")
-    ? style.backgroundColor.slice(1) : "";
+  const color =
+    style.background !== false &&
+    /^#[0-9a-f]{6}$/i.test(style.backgroundColor || "")
+      ? style.backgroundColor.slice(1)
+      : "";
   if (!color) return "var(--text-default, var(--text-normal))";
-  const [r, g, b] = color.match(/../g).map(hex => {
+  const [r, g, b] = color.match(/../g).map((hex) => {
     const channel = parseInt(hex, 16) / 255;
-    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    return channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
   });
   return r * 0.2126 + g * 0.7152 + b * 0.0722 > 0.179 ? "#111827" : "#f2f3f5";
 }
@@ -1235,11 +2187,16 @@ function emphasisDecorationLine(emphasis) {
   return "none";
 }
 
+function removeSendBox(box) {
+  box?.__dtmDispose?.();
+  box?.remove();
+}
+
 function ensureSendBox() {
   const existing = document.getElementById(SEND_BOX_ID);
 
   if (!settings || !settings.enabled || !settings.sendTranslation.enabled) {
-    if (existing) existing.remove();
+    removeSendBox(existing);
     return;
   }
 
@@ -1263,8 +2220,8 @@ function ensureSendBox() {
   const status = box.querySelector("span");
   if (status && status.textContent === status.dataset.dtmHint) {
     const hint = enterHint();
-    if (status.textContent !== hint) status.textContent = hint;
-    status.dataset.dtmHint = hint;
+    if (status.textContent !== text(hint)) chromeText(status, hint);
+    status.dataset.dtmHint = text(hint);
   }
 }
 
@@ -1278,11 +2235,15 @@ function applyComposerBackground(box, editor) {
   // instead of guessing a CSS token that may not resolve in this build.
   if (!editor || typeof getComputedStyle !== "function") return;
   let node = editor;
-  for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+  for (
+    let depth = 0;
+    node && depth < 6;
+    depth += 1, node = node.parentElement
+  ) {
     const bg = getComputedStyle(node).backgroundColor;
     const match = bg && bg.match(/rgba?\(([^)]+)\)/);
     if (!match) continue;
-    const parts = match[1].split(",").map(part => part.trim());
+    const parts = match[1].split(",").map((part) => part.trim());
     const alpha = parts.length === 4 ? parseFloat(parts[3]) : 1;
     if (alpha > 0) {
       box.style.background = bg;
@@ -1299,22 +2260,37 @@ function createSendBox() {
   grip.type = "button";
   grip.className = "dtm-send-grip";
   grip.textContent = "⠿";
-  grip.setAttribute("aria-label", "拖动翻译输入框（双击复位）");
+  chromeText(grip, msg("plugin.send.drag"), "aria-label");
 
   const input = document.createElement("input");
   input.type = "text";
-  input.setAttribute("aria-label", "翻译发送输入框");
+  chromeText(input, msg("plugin.send.input"), "aria-label");
 
   const status = document.createElement("span");
-  status.textContent = enterHint();
+  chromeText(status, enterHint());
   status.dataset.dtmHint = status.textContent;
   let statusTimer = 0;
 
-  input.addEventListener("keydown", async event => {
+  input.addEventListener("keydown", async (event) => {
+    if (event.key === "Escape" && input.readOnly) {
+      event.stopPropagation();
+      event.preventDefault();
+      box.__dtmCancelSend?.();
+      return;
+    }
     if (event.key !== "Enter") return;
     event.stopPropagation();
-    if (event.isComposing || event.keyCode === 229 || input.readOnly ||
-        event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (
+      event.isComposing ||
+      event.keyCode === 229 ||
+      input.readOnly ||
+      event.repeat ||
+      event.shiftKey ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey
+    )
+      return;
     event.preventDefault();
 
     const text = input.value.trim();
@@ -1323,31 +2299,62 @@ function createSendBox() {
     const editor = findDiscordEditor();
     const send = settings.sendTranslation.enterToSend;
     if (!editor) return;
-    const current = () => box.isConnected && editor.isConnected &&
-      channelId === getCurrentChannelId() && editor === findDiscordEditor();
+    let canceled = false;
+    const current = () =>
+      !canceled &&
+      settings.enabled &&
+      settings.sendTranslation.enabled &&
+      box.isConnected &&
+      editor.isConnected &&
+      channelId === getCurrentChannelId() &&
+      editor === findDiscordEditor();
 
     input.readOnly = true;
     clearTimeout(statusTimer);
     delete status.dataset.error;
-    status.textContent = "正在翻译...";
+    chromeText(status, msg("plugin.send.loading"));
     let id;
+    box.__dtmCancelSend = () => {
+      canceled = true;
+      requests.cancel(box.__dtmSendRequest ? [box.__dtmSendRequest] : []);
+      if (id != null) nativeApi.cancelSend(id).catch(() => {});
+    };
 
     try {
       id = await nativeApi.beginSend(send);
-      if (!current()) throw new Error("频道或输入框已切换，原文已保留，请重新翻译。");
-      const result = await nativeApi.translate({ direction: "send", text });
-      if (!current()) throw new Error("频道或输入框已切换，原文已保留，请重新翻译。");
+      if (canceled)
+        throw Object.assign(new Error("已取消发送翻译，原文已保留。"), {
+          code: "CANCELED", reason: "SEND",
+        });
+      if (!current())
+        throw failure("COMPOSER_CHANGED");
+      const operation = requests.request({ direction: "send", text });
+      box.__dtmSendRequest = operation.requestId;
+      const result = await operation.promise;
+      if (!current())
+        throw failure("COMPOSER_CHANGED");
       const outcome = await nativeApi.insertAndSend({ id, text: result.text });
-      if (!outcome || !outcome.ok) throw new Error(outcome?.error || "未能填入 Discord 输入框，原文已保留。");
+      if (!outcome || !outcome.ok)
+        throw Object.assign(failure("COMPOSER_UNAVAILABLE"), outcome?.error && typeof outcome.error === "object" ? outcome.error : {});
       input.value = "";
-      status.textContent = outcome.sent === false ? "已填入输入框" : "已提交发送";
-      statusTimer = setTimeout(() => { status.textContent = enterHint(); status.dataset.dtmHint = status.textContent; }, 1200);
-      if (statusTimer && typeof statusTimer.unref === "function") statusTimer.unref();
+      chromeText(status, msg(outcome.sent === false ? "plugin.send.inserted" : "plugin.send.submitted"));
+      if (current())
+        statusTimer = setTimeout(() => {
+          chromeText(status, enterHint());
+          status.dataset.dtmHint = status.textContent;
+        }, 1200);
+      if (statusTimer && typeof statusTimer.unref === "function")
+        statusTimer.unref();
     } catch (error) {
       status.dataset.error = "true";
-      status.textContent = publicError(error);
+      chromeText(status, errorMessage(error));
     } finally {
-      if (id != null) await nativeApi.cancelSend(id).catch(error => diagnosticLog(publicError(error)));
+      delete box.__dtmCancelSend;
+      delete box.__dtmSendRequest;
+      if (id != null)
+        await nativeApi
+          .cancelSend(id)
+          .catch((error) => diagnosticLog(publicError(error)));
       input.readOnly = false;
       if (current() && send) input.focus();
     }
@@ -1355,25 +2362,43 @@ function createSendBox() {
 
   const resize = document.createElement("div");
   resize.className = "dtm-send-resize";
-  resize.setAttribute("aria-label", "调整翻译输入框宽度（双击复位）");
+  chromeText(resize, msg("plugin.send.resize"), "aria-label");
 
-  installSendBoxDrag(box, grip);
-  installSendBoxResize(box, resize);
+  const stopDrag = installSendBoxDrag(box, grip);
+  const stopResize = installSendBoxResize(box, resize);
+  box.__dtmDispose = () => {
+    clearTimeout(statusTimer);
+    box.__dtmCancelSend?.();
+    stopDrag();
+    stopResize();
+  };
   box.append(grip, input, status, resize);
   return box;
 }
 
 function hasCustomSendBoxPos() {
-  return Boolean(settings.sendBox && Number.isFinite(settings.sendBox.x) && Number.isFinite(settings.sendBox.y));
+  return Boolean(
+    settings.sendBox &&
+      Number.isFinite(settings.sendBox.x) &&
+      Number.isFinite(settings.sendBox.y),
+  );
 }
 
 function hasCustomSendBoxWidth() {
-  return Boolean(settings.sendBox && Number.isFinite(settings.sendBox.width) && settings.sendBox.width > 0);
+  return Boolean(
+    settings.sendBox &&
+      Number.isFinite(settings.sendBox.width) &&
+      settings.sendBox.width > 0,
+  );
 }
 
 function positionSendBox(box, mount) {
-  if (box.dataset.dtmDragging === "true" || box.dataset.dtmResizing === "true") return;
-  const rect = typeof mount.getBoundingClientRect === "function" ? mount.getBoundingClientRect() : null;
+  if (box.dataset.dtmDragging === "true" || box.dataset.dtmResizing === "true")
+    return;
+  const rect =
+    typeof mount.getBoundingClientRect === "function"
+      ? mount.getBoundingClientRect()
+      : null;
 
   if (hasCustomSendBoxWidth()) {
     box.style.width = `${settings.sendBox.width}px`;
@@ -1387,7 +2412,11 @@ function positionSendBox(box, mount) {
     // Default: sit just above the native composer, matching its width.
     const rectLeft = Number.isFinite(rect.left) ? rect.left : rect.x;
     const rectTop = Number.isFinite(rect.top) ? rect.top : rect.y;
-    applyBoxPosition(box, Math.round(rectLeft), Math.round(rectTop - (box.offsetHeight || 0) - 8));
+    applyBoxPosition(
+      box,
+      Math.round(rectLeft),
+      Math.round(rectTop - (box.offsetHeight || 0) - 8),
+    );
   }
 }
 
@@ -1395,8 +2424,14 @@ function applyBoxPosition(box, x, y) {
   let nx = Number.isFinite(x) ? x : 0;
   let ny = Number.isFinite(y) ? y : 0;
   if (typeof window !== "undefined" && window.innerWidth) {
-    nx = Math.min(Math.max(0, nx), Math.max(0, window.innerWidth - (box.offsetWidth || 0)));
-    ny = Math.min(Math.max(0, ny), Math.max(0, window.innerHeight - (box.offsetHeight || 0)));
+    nx = Math.min(
+      Math.max(0, nx),
+      Math.max(0, window.innerWidth - (box.offsetWidth || 0)),
+    );
+    ny = Math.min(
+      Math.max(0, ny),
+      Math.max(0, window.innerHeight - (box.offsetHeight || 0)),
+    );
   } else {
     nx = Math.max(0, nx);
     ny = Math.max(0, ny);
@@ -1413,19 +2448,28 @@ function installSendBoxDrag(box, grip) {
   let originLeft = 0;
   let originTop = 0;
 
-  const onMove = event => {
-    applyBoxPosition(box, originLeft + (event.clientX - startX), originTop + (event.clientY - startY));
+  const onMove = (event) => {
+    applyBoxPosition(
+      box,
+      originLeft + (event.clientX - startX),
+      originTop + (event.clientY - startY),
+    );
   };
-  const onUp = () => {
+  const stop = () => {
     box.dataset.dtmDragging = "false";
     if (typeof document !== "undefined") {
       document.removeEventListener("pointermove", onMove, true);
       document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", stop, true);
     }
-    persistSendBoxPosition(box);
+  };
+  const onUp = () => {
+    stop();
+    if (box.isConnected && settings.enabled && settings.sendTranslation.enabled)
+      persistSendBoxPosition(box);
   };
 
-  grip.addEventListener("pointerdown", event => {
+  grip.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     event.stopPropagation();
     const rect = box.getBoundingClientRect();
@@ -1436,32 +2480,39 @@ function installSendBoxDrag(box, grip) {
     box.dataset.dtmDragging = "true";
     document.addEventListener("pointermove", onMove, true);
     document.addEventListener("pointerup", onUp, true);
+    document.addEventListener("pointercancel", stop, true);
   });
 
-  grip.addEventListener("dblclick", event => {
+  grip.addEventListener("dblclick", (event) => {
     event.preventDefault();
     event.stopPropagation();
     resetSendBoxPosition(box);
   });
+  return stop;
 }
 
 function installSendBoxResize(box, handle) {
   let startX = 0;
   let startWidth = 0;
 
-  const onMove = event => {
+  const onMove = (event) => {
     box.style.width = `${clampBoxWidth(startWidth + (event.clientX - startX))}px`;
   };
-  const onUp = () => {
+  const stop = () => {
     box.dataset.dtmResizing = "false";
     if (typeof document !== "undefined") {
       document.removeEventListener("pointermove", onMove, true);
       document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", stop, true);
     }
-    persistSendBoxWidth(box);
+  };
+  const onUp = () => {
+    stop();
+    if (box.isConnected && settings.enabled && settings.sendTranslation.enabled)
+      persistSendBoxWidth(box);
   };
 
-  handle.addEventListener("pointerdown", event => {
+  handle.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     event.stopPropagation();
     startX = event.clientX;
@@ -1469,24 +2520,29 @@ function installSendBoxResize(box, handle) {
     box.dataset.dtmResizing = "true";
     document.addEventListener("pointermove", onMove, true);
     document.addEventListener("pointerup", onUp, true);
+    document.addEventListener("pointercancel", stop, true);
   });
 
-  handle.addEventListener("dblclick", event => {
+  handle.addEventListener("dblclick", (event) => {
     event.preventDefault();
     event.stopPropagation();
     resetSendBoxWidth(box);
   });
+  return stop;
 }
 
 function clampBoxWidth(width) {
-  const max = typeof window !== "undefined" && window.innerWidth ? window.innerWidth : 4000;
+  const max =
+    typeof window !== "undefined" && window.innerWidth
+      ? window.innerWidth
+      : 4000;
   return Math.min(Math.max(220, Math.round(width)), max);
 }
 
 async function saveSendBox(patch, box, mount) {
   settings.sendBox = { ...settings.sendBox, ...patch };
   try {
-    settings = normalizeSettings(await nativeApi.saveSettings(settings));
+    applySnapshot(unwrap(await nativeApi.patchSendBox(patch)));
   } catch (error) {
     diagnosticLog(publicError(error));
   }
@@ -1516,14 +2572,16 @@ function resetSendBoxWidth(box) {
 }
 
 function enterHint() {
-  return settings.sendTranslation.enterToSend ? "回车发送" : "回车填入输入框";
+  return msg(settings.sendTranslation.enterToSend ? "plugin.send.enter" : "plugin.send.insert");
 }
 
 function findDiscordComposerMount(editor) {
-  return editor.closest("[class*='channelTextArea']") ||
+  return (
+    editor.closest("[class*='channelTextArea']") ||
     editor.closest("[class*='scrollableContainer']") ||
     editor.closest("form") ||
-    editor.parentElement;
+    editor.parentElement
+  );
 }
 
 function findDiscordEditor() {
@@ -1549,7 +2607,6 @@ function button(label, variant) {
   host.dataset.dtmButtonLoading = "false";
 
   let currentLabel = label;
-  let flashTimer = 0;
 
   function renderButton() {
     mountDiscordReactControl(host, {
@@ -1557,24 +2614,21 @@ function button(label, variant) {
       label: currentLabel,
       variant: variant === "secondary" ? "secondary" : "primary",
       disabled: host.disabled,
-      loading: host.dataset.dtmButtonLoading === "true"
+      loading: host.dataset.dtmButtonLoading === "true",
     });
   }
 
-  host.flashLabel = (temporaryLabel, durationMs = 1500) => {
-    currentLabel = temporaryLabel;
-    // Fade the button a touch while it shows the confirmation, then restore it.
-    host.style.transition = "opacity .15s ease";
-    host.style.opacity = "0.6";
+  host.setLabel = (value) => {
+    currentLabel = value;
     renderButton();
-    if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => {
-      currentLabel = label;
-      flashTimer = 0;
-      host.style.opacity = "";
-      renderButton();
-    }, durationMs);
-    if (flashTimer && typeof flashTimer.unref === "function") flashTimer.unref();
+  };
+  host.setBusy = (value) => {
+    if (value) host.setAttribute("aria-busy", "true");
+    else host.removeAttribute("aria-busy");
+  };
+  host.setLive = (value) => {
+    if (value === "polite" || value === "assertive") host.setAttribute("aria-live", value);
+    else host.removeAttribute("aria-live");
   };
 
   Object.defineProperty(host, "disabled", {
@@ -1585,10 +2639,10 @@ function button(label, variant) {
     set(value) {
       host.dataset.dtmButtonDisabled = value ? "true" : "false";
       renderButton();
-    }
+    },
   });
 
-  host.setLoading = value => {
+  host.setLoading = (value) => {
     host.dataset.dtmButtonLoading = value ? "true" : "false";
     renderButton();
   };
@@ -1598,11 +2652,14 @@ function button(label, variant) {
 }
 
 function disposeControls(node) {
-  const ids = Array.from(node.querySelectorAll("[data-dtm-control-id]")).map(host => {
-    host.dataset.dtmNativeReactMounted = "disposed";
-    mainWorldControlCallbacks.delete(host.dataset.dtmControlId);
-    return host.dataset.dtmControlId;
-  });
+  const ids = Array.from(node.querySelectorAll("[data-dtm-control-id]")).map(
+    (host) => {
+      host.dataset.dtmNativeReactMounted = "disposed";
+      mainWorldControlCallbacks.delete(host.dataset.dtmControlId);
+      controlHosts.delete(host.dataset.dtmControlId);
+      return host.dataset.dtmControlId;
+    },
+  );
   if (ids.length) sendMainWorldMessage("dtm:unmount-controls", { ids });
 }
 
@@ -1631,22 +2688,30 @@ function diagnosticLog(message) {
   const text = `[Babel] ${String(message || "Unknown Discord UI mount error.")}`;
   if (diagnosticLoggedMessages.has(text)) return;
   diagnosticLoggedMessages.add(text);
-  if (typeof console !== "undefined" && typeof console.warn === "function") console.warn(text);
+  if (typeof console !== "undefined" && typeof console.warn === "function")
+    console.warn(text);
 }
 
 function showNativeToast(message, tone = "message") {
   // Always route feedback through Discord's own toast system so it inherits the
   // active light/dark theme instead of a hand-rolled panel toast with fixed colors.
-  return requestMainWorldToast({ message: String(message || ""), tone });
+  return requestMainWorldToast({ message: text(message), tone });
 }
 
 function sendMainWorldMessage(type, detail) {
-  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function" || typeof window.CustomEvent !== "function") {
+  if (
+    typeof window === "undefined" ||
+    typeof window.dispatchEvent !== "function" ||
+    typeof window.CustomEvent !== "function"
+  ) {
     return false;
   }
 
   mainWorldMessageId += 1;
-  const payload = { ...detail, __dtmMessageId: `dtm-renderer-${mainWorldMessageId}` };
+  const payload = {
+    ...detail,
+    __dtmMessageId: `dtm-renderer-${mainWorldMessageId}`,
+  };
   window.dispatchEvent(new window.CustomEvent(type, { detail: payload }));
   if (typeof window.postMessage === "function") {
     window.postMessage({ source: "dtm", type, detail: payload }, "*");
@@ -1663,16 +2728,31 @@ function requestMainWorldControl(host, spec) {
     id = `dtm-control-${nativeControlId}`;
   }
   if (host.dataset.dtmNativeReactMounted === "disposed") return false;
+  host.__dtmControlSource = spec;
+  spec = localizedSpec(spec);
   host.__dtmControlSpec = spec;
+  host.lang = i18n.getLocale();
+  controlHosts.set(id, host);
   host.dataset.dtmControlId = id;
   host.dataset.dtmNativeReactMounted = "pending";
-  host.dataset.dtmControlMountVersion = String(Number(host.dataset.dtmControlMountVersion || 0) + 1);
-  mainWorldControlCallbacks.set(id, typeof spec.onChange === "function" ? spec.onChange : () => {});
+  host.dataset.dtmControlMountVersion = String(
+    Number(host.dataset.dtmControlMountVersion || 0) + 1,
+  );
+  mainWorldControlCallbacks.set(
+    id,
+    typeof spec.onChange === "function" ? spec.onChange : () => {},
+  );
 
   const detail = { ...spec, id };
   delete detail.onChange;
   const sent = sendMainWorldMessage("dtm:mount-control", detail);
-  if (sent) scheduleMainWorldControlRetry(host, detail, host.dataset.dtmControlMountVersion, 1);
+  if (sent)
+    scheduleMainWorldControlRetry(
+      host,
+      detail,
+      host.dataset.dtmControlMountVersion,
+      1,
+    );
   return sent;
 }
 
@@ -1684,24 +2764,59 @@ function requestMainWorldToast(detail) {
   return true;
 }
 
-function shouldHandleMainWorldMessage(detail) {
-  const id = detail && detail.__dtmMessageId;
-  if (!id) return true;
-  if (handledMainWorldMessageIds.has(id)) return false;
-  handledMainWorldMessageIds.add(id);
-  if (handledMainWorldMessageIds.size > 1000) handledMainWorldMessageIds.clear();
+function messageSequence(id) {
+  // Main-world sends a primitive canonical dtm-main-<positive decimal>.
+  // Boxed strings compare by identity, so they are rejected before coercion.
+  if (typeof id !== "string") return null;
+  const text = id;
+  const prefix = "dtm-main-";
+  const suffix = text.slice(prefix.length);
+  if (!text.startsWith(prefix) || !/^[1-9][0-9]*$/.test(suffix)) return null;
+  const value = Number(suffix);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function acceptMessageId(state, id) {
+  const sequence = messageSequence(id);
+  if (sequence == null) return false;
+  if (state.ids.has(id) || (state.floor && sequence <= state.floor)) return false;
+  state.ids.add(id);
+  if (sequence > state.highest) state.highest = sequence;
+  if (state.ids.size > 1000) {
+    state.floor = state.highest - 1000;
+    for (const seen of state.ids) {
+      const seenSequence = messageSequence(seen);
+      if (seenSequence != null && seenSequence <= state.floor) state.ids.delete(seen);
+    }
+  }
   return true;
 }
 
+function shouldHandleMainWorldMessage(detail) {
+  const id = detail && detail.__dtmMessageId;
+  if (!id) return true;
+  return acceptMessageId(handledMainWorldMessages, id);
+}
+
 function scheduleMainWorldControlRetry(host, detail, version, attempt) {
-  if (attempt >= MAIN_WORLD_CONTROL_MAX_ATTEMPTS || typeof window === "undefined" || typeof window.setTimeout !== "function") {
+  if (
+    attempt >= MAIN_WORLD_CONTROL_MAX_ATTEMPTS ||
+    typeof window === "undefined" ||
+    typeof window.setTimeout !== "function"
+  ) {
     return;
   }
   window.setTimeout(() => {
-    if (!host || host.dataset.dtmControlMountVersion !== version || host.dataset.dtmNativeReactMounted !== "pending") {
+    if (
+      !host ||
+      host.dataset.dtmControlMountVersion !== version ||
+      host.dataset.dtmNativeReactMounted !== "pending"
+    ) {
       return;
     }
-    if (!sendMainWorldMessage("dtm:mount-control", detail)) return;
+    const latest = { ...localizedSpec(host.__dtmControlSource), id: detail.id };
+    delete latest.onChange;
+    if (!sendMainWorldMessage("dtm:mount-control", latest)) return;
     scheduleMainWorldControlRetry(host, detail, version, attempt + 1);
   }, MAIN_WORLD_CONTROL_RETRY_MS);
 }
@@ -1710,31 +2825,33 @@ function installMainWorldControlEvents() {
   if (mainWorldControlEventsInstalled || typeof window === "undefined") return;
   mainWorldControlEventsInstalled = true;
 
-  window.addEventListener("dtm:settings-open", event => {
-    if (shouldHandleMainWorldMessage(event.detail)) openSettingsPanel();
+  window.addEventListener("dtm:settings-open", (event) => {
+    if (shouldHandleMainWorldMessage(event.detail))
+      openSettingsPanel(event.detail?.key);
   });
-  window.addEventListener("dtm:settings-close", event => {
+  window.addEventListener("dtm:settings-close", (event) => {
     if (!shouldHandleMainWorldMessage(event.detail)) return;
     closeSettingsPanel();
   });
-  window.addEventListener("dtm:control-change", event => {
+  window.addEventListener("dtm:control-change", (event) => {
     const detail = event.detail || {};
     if (!shouldHandleMainWorldMessage(detail)) return;
     const callback = mainWorldControlCallbacks.get(detail.id);
     if (callback) callback(detail.value);
   });
 
-  window.addEventListener("dtm:control-mounted", event => {
+  window.addEventListener("dtm:control-mounted", (event) => {
     const detail = event.detail || {};
     if (!shouldHandleMainWorldMessage(detail)) return;
     handleMainWorldControlMounted(detail);
   });
 
-  window.addEventListener("message", event => {
+  window.addEventListener("message", (event) => {
     const data = event.data || {};
     if (event.source !== window || data.source !== "dtm") return;
     if (data.type === "dtm:settings-open") {
-      if (shouldHandleMainWorldMessage(data.detail)) openSettingsPanel();
+      if (shouldHandleMainWorldMessage(data.detail))
+        openSettingsPanel(data.detail?.key);
       return;
     }
     if (data.type === "dtm:settings-close") {
@@ -1764,8 +2881,8 @@ function handleMainWorldControlMounted(detail) {
   if (!host) return;
   host.dataset.dtmNativeReactMounted = detail.ok ? "true" : "false";
   if (detail.error) {
-    host.dataset.dtmNativeReactError = String(detail.error);
-    diagnosticLog(detail.error);
+    host.dataset.dtmNativeReactError = detail.error?.code || "CONFIG";
+    diagnosticLog(host.dataset.dtmNativeReactError);
   }
 }
 
@@ -1779,12 +2896,13 @@ function translationStylePreview(style) {
     // and blank the preview on every color change.
     mountDiscordReactControl(host, {
       kind: "translation-preview",
-      name: "预览",
-      style: translationPreviewStyle(currentStyle, false)
+      name: msg("plugin.preview"),
+      previewText: msg("plugin.previewText"),
+      style: translationPreviewStyle(currentStyle, false),
     });
   }
 
-  host.updateStyle = nextStyle => {
+  host.updateStyle = (nextStyle) => {
     currentStyle = { ...nextStyle };
     renderPreview();
   };
@@ -1810,6 +2928,22 @@ function section(_title, children, sectionKey) {
   return rows;
 }
 
+function applyHidden(node, hidden) {
+  if (!node) return;
+  node.hidden = hidden;
+  if (hidden) node.setAttribute("hidden", "");
+  else node.removeAttribute("hidden");
+}
+
+function setRowVisible(host, visible) {
+  if (!host) return;
+  host.__dtmVisible = Boolean(visible);
+  const self = host.dataset && host.dataset.dtmSelfHide === "true";
+  const row = !self && typeof host.closest === "function" ? host.closest("[data-dtm-native-setting-row]") : null;
+  applyHidden(self ? host : row || host, !visible);
+  if (row && row !== host) applyHidden(host, false);
+}
+
 function settingRow(child) {
   const row = div(DISCORD_UI.settingCard);
   row.dataset.dtmNativeSettingRow = "true";
@@ -1817,6 +2951,22 @@ function settingRow(child) {
   const inner = stack("settingRow", DISCORD_UI.settingStack);
   inner.appendChild(child);
   row.appendChild(inner);
+  if (child && child.__dtmVisible === false) applyHidden(row, true);
+  if (child && !(child.dataset && child.dataset.dtmSelfHide === "true")) applyHidden(child, false);
+  return row;
+}
+
+function actionRow(statuses, buttons) {
+  const row = div();
+  row.dataset.dtmActions = "true";
+  for (const status of [].concat(statuses)) {
+    if (!status) continue;
+    status.dataset.dtmSelfHide = "true";
+    row.appendChild(status);
+  }
+  const actions = buttonRow(buttons);
+  actions.dataset.dtmActionButtons = "true";
+  row.appendChild(actions);
   return row;
 }
 
@@ -1842,8 +2992,8 @@ function applyDiscordStackLayout(node, layout) {
   node.setAttribute("style", layout.style);
 }
 
-function passwordField(name, value, onChange, placeholder) {
-  return inputField(name, "password", value, onChange, { placeholder });
+function passwordField(name, value, onChange, placeholder, disabled = false) {
+  return inputField(name, "password", value, onChange, { placeholder, disabled });
 }
 
 function inputField(name, type, value, onChange, options = {}) {
@@ -1853,24 +3003,34 @@ function inputField(name, type, value, onChange, options = {}) {
   mountDiscordReactControl(host, {
     kind: resolvedKind,
     name,
-    type: type === "password" ? "password" : type === "number" ? "number" : "text",
+    type:
+      type === "password" ? "password" : type === "number" ? "number" : "text",
     value: value == null ? "" : String(value),
     placeholder: options.placeholder || "",
     min: options.min,
     max: options.max,
+    maxLength: options.maxLength,
     disabled: Boolean(options.disabled),
-    onChange
+    onChange,
   });
 
   return host;
 }
 
 function languageSelectField(name, value, onChange) {
-  return selectField(name, value, optionsWithCurrentValue(LANGUAGE_OPTIONS, value), onChange);
+  return selectField(
+    name,
+    value,
+    optionsWithCurrentValue(LANGUAGE_OPTIONS, value),
+    onChange,
+  );
 }
 
 function providerById(value) {
-  return MODEL_PROVIDERS.find(provider => provider.value === value) || MODEL_PROVIDERS[0];
+  return (
+    MODEL_PROVIDERS.find((provider) => provider.value === value) ||
+    MODEL_PROVIDERS[0]
+  );
 }
 
 function providerHasApiKey(provider) {
@@ -1879,18 +3039,19 @@ function providerHasApiKey(provider) {
 
 function providerOptionsWithStatus(status) {
   const saved = status && typeof status === "object" ? status : {};
-  return MODEL_PROVIDERS.map(provider => ({
+  return MODEL_PROVIDERS.map((provider) => ({
     value: provider.value,
-    label: provider.label,
-    apiKeySaved: Boolean(saved[provider.value])
+    label: provider.value === "custom" ? msg("plugin.provider.custom") : ["ollama", "lmstudio"].includes(provider.value) ? msg("plugin.provider.local", { provider: provider.value === "ollama" ? "Ollama" : "LM Studio" }) : provider.label,
+    savedKeyLabel: msg("plugin.key.savedAria"),
+    apiKeySaved: Boolean(saved[provider.value]),
   }));
 }
 
 function apiKeyPlaceholder(provider) {
-  if (!providerHasApiKey(provider)) return "粘贴 API Key";
+  if (!providerHasApiKey(provider)) return msg("plugin.key.paste");
   const previews = providerApiKeyStatus && providerApiKeyStatus.previews;
   const masked = previews && previews[provider];
-  return masked ? `已保存 ${masked}` : "已保存（粘贴可替换）";
+  return masked ? msg("plugin.key.savedPlaceholder", { preview: masked }) : msg("plugin.key.replacePlaceholder");
 }
 
 function apiKeyValueForRequest(value) {
@@ -1898,14 +3059,48 @@ function apiKeyValueForRequest(value) {
   return trimmed && trimmed !== API_KEY_MASK ? trimmed : "";
 }
 
+function safeSwatch(value) {
+  const text = String(value || "").trim();
+  if (/^auto$/i.test(text)) return "auto";
+  const match = /^#([0-9a-fA-F]{6})$/.exec(text);
+  return match ? `#${match[1].toUpperCase()}` : "";
+}
+
+function colorChoices(options, current) {
+  const saved = String(current ?? "");
+  const trimmed = saved.trim();
+  const withSwatch = (option) => {
+    const swatch = safeSwatch(option.value);
+    return swatch ? { ...option, swatch } : { ...option };
+  };
+  if (!trimmed || options.some((option) => option.value === saved)) return options.map(withSwatch);
+  const match = options.findIndex((option) => String(option.value).toLowerCase() === trimmed.toLowerCase());
+  if (match >= 0) {
+    return options.map((option, index) => {
+      const next = withSwatch(option);
+      if (index !== match) return next;
+      const swatch = safeSwatch(saved) || next.swatch;
+      return { ...next, value: saved, ...(swatch ? { swatch } : {}) };
+    });
+  }
+  const swatch = safeSwatch(trimmed);
+  if (swatch && swatch !== "auto") {
+    return options.map(withSwatch).concat({ value: saved, label: msg("plugin.color.custom"), swatch });
+  }
+  return options.map(withSwatch).concat({ value: saved, label: saved });
+}
+
 function optionsWithCurrentValue(options, value) {
   const current = String(value || "").trim();
-  if (!current || options.some(option => option.value === current)) return options;
-  return options.concat({ value: current, label: `${current}（当前自定义）` });
+  if (!current || options.some((option) => option.value === current))
+    return options;
+  return options.concat({ value: current, label: current });
 }
 
 function selectField(name, value, options, onChange) {
-  const items = options.map(option => typeof option === "string" ? { value: option, label: option } : option);
+  const items = options.map((option) =>
+    typeof option === "string" ? { value: option, label: option } : option,
+  );
   const host = reactControlHost("select");
 
   mountDiscordReactControl(host, {
@@ -1913,47 +3108,9 @@ function selectField(name, value, options, onChange) {
     name,
     value,
     options: items,
-    onChange
+    onChange,
   });
 
-  return host;
-}
-
-function colorSwatchField(name, value, options, onChange) {
-  const host = div("dtm-swatch-field");
-  const label = div("dtm-field-label");
-  label.textContent = name;
-  const grid = div("dtm-swatch-grid");
-  const buttons = [];
-
-  const setSelected = nextValue => {
-    for (const buttonNode of buttons) {
-      buttonNode.setAttribute("aria-pressed", buttonNode.dataset.dtmColorValue === nextValue ? "true" : "false");
-    }
-  };
-
-  for (const option of optionsWithCurrentValue(options, value)) {
-    const buttonNode = document.createElement("button");
-    buttonNode.type = "button";
-    buttonNode.className = "dtm-swatch";
-    buttonNode.title = option.label;
-    buttonNode.setAttribute("aria-label", `${name}：${option.label}`);
-    buttonNode.dataset.dtmColorValue = option.value;
-    buttonNode.style.background = option.value === "auto" ? "var(--background-surface-high, var(--background-secondary))" : option.value;
-    if (option.value === "auto") {
-      buttonNode.textContent = "A";
-      buttonNode.style.color = "var(--text-default, var(--text-normal))";
-    }
-    buttonNode.addEventListener("click", () => {
-      setSelected(option.value);
-      onChange(option.value);
-    });
-    buttons.push(buttonNode);
-    grid.appendChild(buttonNode);
-  }
-
-  host.append(label, grid);
-  setSelected(value);
   return host;
 }
 
@@ -1964,9 +3121,10 @@ function modelComboBoxHostFor(name, value, options, onChange) {
     mountDiscordReactControl(host, {
       kind: "combobox",
       name,
+      placeholder: msg("plugin.modelPlaceholder"),
       value: nextValue,
       options: nextOptions.map(comboBoxOption),
-      onChange
+      onChange,
     });
   };
 
@@ -1976,9 +3134,10 @@ function modelComboBoxHostFor(name, value, options, onChange) {
 }
 
 function comboBoxOption(option) {
-  const item = typeof option === "string" ? { value: option, label: option } : option;
+  const item =
+    typeof option === "string" ? { value: option, label: option } : option;
   const value = item && item.value != null ? String(item.value) : "";
-  const label = item && item.label != null ? String(item.label) : value;
+  const label = item && item.label != null ? item.label : value;
   return { ...item, id: value, value, label };
 }
 
@@ -1989,7 +3148,7 @@ function toggleRow(name, checked, onChange) {
     kind: "switch",
     name,
     value: Boolean(checked),
-    onChange
+    onChange,
   });
 
   return host;
@@ -1999,71 +3158,64 @@ function publicError(error) {
   let message = error && error.message ? error.message : String(error);
   message = message
     .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .replace(/^Model list request failed/i, "模型列表请求失败")
-    .replace(/^Model request failed/i, "模型请求失败")
-    .replace(/^Model list is empty\.$/i, "没有可用模型。")
-    .replace(/^Nothing to translate\.$/i, "没有可翻译的文本。");
+     .replace(/^Error:\s*/i, "");
+
+
+
+
   return message
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
     .replace(/([?&]key=)[^&\s]+/g, "$1[redacted]")
-    .replace(/x-api-key\s*[:=]\s*[A-Za-z0-9._~+/=-]+/gi, "x-api-key: [redacted]");
+    .replace(
+      /x-api-key\s*[:=]\s*[A-Za-z0-9._~+/=-]+/gi,
+      "x-api-key: [redacted]",
+    );
 }
 
 module.exports = { start };
 
-/* @dtm-test-only:start — stripped from the shipped payload by the build/install copy */
+/* @dtm-test-only:start */
 function setRuntimeForTests(runtime) {
-  if (!originalTestRuntime) {
-    originalTestRuntime = {
-      nativeApi,
-      settings,
-      providerApiKeyStatus,
-      nativeError,
-      translationCache
-    };
-  }
-
-  if (runtime && runtime.nativeApi) nativeApi = runtime.nativeApi;
-  if (runtime && runtime.settings) settings = normalizeSettings(runtime.settings);
-  if (runtime && runtime.providerApiKeyStatus) providerApiKeyStatus = { ...runtime.providerApiKeyStatus };
-  if (runtime && Object.prototype.hasOwnProperty.call(runtime, "nativeError")) nativeError = String(runtime.nativeError || "");
+  nativeApi = runtime.nativeApi || {};
+  settings = normalizeSettings(runtime.settings);
+  systemLocale = UI_LOCALES.includes(runtime.systemLocale) ? runtime.systemLocale : "zh-Hans";
+  i18n.setLocale(systemLocale);
+  controlHosts.clear();
+  settingsRevision = 1;
+  executionRevision = 1;
+  credentialContext = readDisplayContext = "";
+  pauseNoticeRevision = 0;
+  requests = new RequestClient(nativeApi, () => executionRevision);
+  displayState = new DisplayState();
+  providerApiKeyStatus = runtime.providerApiKeyStatus || {};
+  nativeStatus = runtime.nativeStatus || null;
+  nativeError = nativeStatus ? errorMessage(nativeStatus) : runtime.nativeError || "";
   settingsPageOpen = false;
-  settingsPageGeneration += 1;
+  settingsPageGeneration++;
+  activeSettingsKey = "general";
   settingsSections.clear();
   mainWorldControlCallbacks.clear();
-  handledMainWorldMessageIds.clear();
+  handledMainWorldMessages.ids.clear();
+  handledMainWorldMessages.highest = 0;
+  handledMainWorldMessages.floor = 0;
   mainWorldControlEventsInstalled = false;
-  translationCache = new Map();
-  translationCacheGeneration += 1;
-  pendingTranslations = new Map();
-  messageOperations = new WeakMap();
-  if (persistCacheTimer) clearTimeout(persistCacheTimer);
-  persistCacheTimer = 0;
   dismissedTranslations = new Set();
-  translatedMessages = new Set();
-  currentChannelId = runtime && runtime.channelId ? String(runtime.channelId) : "";
+  currentChannelId = runtime.channelId || "";
   autoTranslateBaseline = new Map();
   autoHandledMessages = new Set();
-  autoTranslateQueue = [];
-  autoTranslateActive = 0;
+  autoEvictionFloor = 0n;
+  settingsForm = null;
+  retainedDraft = null;
 }
-
 function resetRuntimeForTests() {
-  if (!originalTestRuntime) return;
-  translationCacheGeneration += 1;
-  pendingTranslations.clear();
-  messageOperations = new WeakMap();
-  if (persistCacheTimer) clearTimeout(persistCacheTimer);
-  persistCacheTimer = 0;
-  nativeApi = originalTestRuntime.nativeApi;
-  settings = originalTestRuntime.settings;
-  providerApiKeyStatus = originalTestRuntime.providerApiKeyStatus;
-  nativeError = originalTestRuntime.nativeError;
-  translationCache = originalTestRuntime.translationCache;
-  originalTestRuntime = null;
+  requests?.cancel();
+  domWatch?.stop();
+  domWatch = null;
+  settingsForm = null;
+  settingsPageOpen = false;
+  activeSettingsKey = "general";
+  settingsSections.clear();
 }
-
 module.exports.__test = {
   openSettingsPanel,
   closeSettingsPanel,
@@ -2082,7 +3234,6 @@ module.exports.__test = {
   publicError,
   providerOptionsWithStatus,
   resetRuntimeForTests,
-  runDomMaintenance,
   section,
   setRuntimeForTests,
   showNativeToast,
@@ -2092,9 +3243,9 @@ module.exports.__test = {
   applyAutoTranslateSettings,
   autoTranslateMessage,
   clearTranslationCache,
+  acceptMainWorldMessageId: (id) => acceptMessageId(handledMainWorldMessages, id),
+  mainWorldDedupeSize: () => handledMainWorldMessages.ids.size,
   getSettingsForTests: () => settings,
-  getUnitCacheKey,
-  loadPersistedCache,
   getCurrentChannelId,
   messageSnowflake,
   runAutoTranslate,
@@ -2102,6 +3253,16 @@ module.exports.__test = {
   snowflakeTimestamp,
   syncCurrentChannel,
   restoreVisibleTranslations,
-  refreshTranslationStyles
+  refreshTranslationStyles,
+  applySnapshot,
+  refreshUiChrome,
+  getUiLocale: i18n.getLocale,
+  getFormForTests: () => settingsForm,
+  safeSwatch,
+  injectBaseStyles,
+  msg,
+  text,
+  controlHosts,
+  displayState: () => displayState,
 };
 /* @dtm-test-only:end */

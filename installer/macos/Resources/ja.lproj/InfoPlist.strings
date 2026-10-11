@@ -1,0 +1,3 @@
+"NSAppDataUsageDescription" = "Babel マネージャーは、プラグインのインストールや削除のため、選択した Discord データフォルダーにアクセスします。明示的に削除を選ばない限り、保存データを保持します。";
+"CFBundleDisplayName" = "Babel マネージャー";
+"CFBundleName" = "Babel マネージャー";

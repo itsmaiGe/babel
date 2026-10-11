@@ -1,0 +1,40 @@
+name: Publish verified draft
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Verified release tag
+        required: true
+        type: string
+      commit:
+        description: Full verified source commit
+        required: true
+        type: string
+      sums_sha256:
+        description: SHA-256 of the verified SHA256SUMS asset
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: babel-release-${{ inputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Re-read pins and publish once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          SUMS_SHA256: ${{ inputs.sums_sha256 }}
+        run: node scripts/release.js publish "$RELEASE_TAG" "$RELEASE_COMMIT" "$SUMS_SHA256"

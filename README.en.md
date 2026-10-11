@@ -25,7 +25,7 @@
 
 ## 📸 Preview
 
-These are real Babel settings running inside Discord. The provider details are example
+These screenshots show the verified 0.1.5 interface. The 0.1.6 local candidate is under test; screenshots will be updated after real-client verification. The provider details are example
 values; **Babel does not include an API key**.
 
 <table>
@@ -35,8 +35,8 @@ values; **Babel does not include an API key**.
       <img src="assets/screenshots/settings-overview.png" alt="Babel model and message translation settings inside Discord" />
     </td>
     <td width="50%" valign="top">
-      <p><strong>Send translation and appearance</strong></p>
-      <img src="assets/screenshots/settings-translation.png" alt="Babel send translation and translation appearance settings inside Discord" />
+      <p><strong>Translation and appearance</strong></p>
+      <img src="assets/screenshots/settings-translation.png" alt="Babel translation and appearance settings inside Discord" />
     </td>
   </tr>
 </table>
@@ -62,8 +62,9 @@ for people who only want translation.
 | Send translation | A movable, resizable input above Discord's composer translates your text before sending. Disable auto-send when you want to review the result first. |
 | Auto-translate | Translates only messages that arrive after you enable it. It never translates the channel backlog and skips messages already in your target language. |
 | Translation styles | Natural, casual, literal, concise, gaming, formal, or your own custom prompt. |
-| Appearance | Put translations above or below the original, hide the background, and adjust colors, fonts, emphasis, and input opacity. Automatic colors follow Discord's theme. |
-| Persistent cache | Reuses translations for matching text, model, and prompt. Concurrent identical requests are combined to reduce latency and model cost. |
+| Appearance | Put translations above or below the original, choose emphasis, background color, translation color, translation font, and translation-box opacity. Colors have names; Auto follows Discord's theme. |
+| Translation cache | Translations are always stored locally. Matching text, model, and prompt are reused, and identical concurrent requests are combined. Clear the cache from settings; usage is not shown. |
+| Interface language | The plugin and native managers support English, Simplified Chinese, Traditional Chinese, and Japanese, and always follow the system language. |
 | Native proxy support | Provider requests use Electron's network stack and follow the system or Discord proxy. |
 
 ### Supported providers
@@ -102,6 +103,10 @@ Releases page before choosing to run it.
 
 The current macOS build is for **Apple Silicon (M1 or newer)**.
 
+If access to Discord data is denied, use **File → Choose Discord folder…** to
+select the data folder shown in the manager and retry. Install and uninstall stay
+disabled while the target is inaccessible.
+
 ### Finish the installation
 
 On either platform, fully quit Discord and reopen it. Closing only the window is not
@@ -111,12 +116,23 @@ macOS. Babel will then appear under **Discord Settings → Babel**.
 ## 🎮 How to use
 
 1. Open **Discord Settings → Babel**.
-2. Choose a provider and model, then save your API key if the provider needs one.
+2. Choose a provider and model, enter your own API key if needed, and click the shared **Save** button. Provider, model, key, and language edits are saved together; use **Discard changes** to abandon an unsaved draft.
 3. Pick the language and translation style you want.
 4. Double-click a message to translate it.
 
-For outgoing text, enable **Send Translation** in Babel settings. For automatic incoming
+For outgoing text, enable **Translation input box** in Babel settings. For automatic incoming
 translation, enable **Auto-translate new messages**; only new messages are affected.
+Click **Save** to apply your changes.
+
+Custom endpoint keys are isolated by the complete endpoint address. Remote HTTP
+requires explicit permission for that address; HTTPS is recommended. Check the key
+status after changing endpoints.
+
+The translation cache is always stored locally. The Translation page only offers
+**Clear translation cache**. Success is a brief notice, and a failure shows an error.
+External configuration changes prompt you to reload or
+explicitly overwrite. Press **Esc** during send translation to cancel and keep the
+original text.
 
 Send translation does not overwrite an existing Discord draft. Switching channels or
 changing the draft or reply target during translation cancels that send and keeps your
@@ -138,7 +154,7 @@ original text in the translation input.
   on Windows). They are only sent to the provider you configured.
 - Babel never reads your Discord token or calls Discord's message endpoints directly;
   translated messages are sent through Discord's native composer.
-- Uninstalling Babel removes its settings, encrypted API keys, and translation cache.
+- Ordinary uninstall keeps settings, encrypted API keys, and translation cache. The explicit cleanup checkbox erases only the selected client’s data after the loader has been restored successfully.
 
 ## ❓ FAQ
 
@@ -192,8 +208,12 @@ Please report reproducible problems in [Issues](https://github.com/itsmaiGe/babe
 npm ci
 npm test
 npm run install:mod   # install the current source build
-npm run uninstall:mod # remove Babel and its local data
+npm run uninstall:mod # remove Babel and keep its saved data
+npm run uninstall:mod -- --remove-profile-data # explicitly remove selected saved data
+npm run uninstall:mod -- --prune # remove unreferenced payloads; Discord must be closed and no installer running
 ```
+
+The developer command does not lock the target. Do not run it while the macOS app, the Windows installer, or another developer command is changing the same Discord installation. Overlap is unsupported. After an interruption, run the command again once the other operation has finished.
 
 `npm run build` creates the macOS DMG and requires Xcode Command Line Tools. The Windows
 installer is built by GitHub Actions from the pinned Go dependencies in `installer/`.
@@ -203,7 +223,8 @@ node scripts/prepare-installer-payload.js
 cd installer
 go mod download
 go test ./internal/...
-go run github.com/akavel/rsrc@v0.10.2 -ico babel.ico -o rsrc.syso
+go run github.com/akavel/rsrc@v0.10.2 -ico babel.ico -manifest babel.manifest -o rsrc.syso
+$env:CGO_ENABLED="0"
 go build -ldflags "-H windowsgui -s -w" -o Babel-Installer.exe .
 ```
 
@@ -211,6 +232,6 @@ go build -ldflags "-H windowsgui -s -w" -o Babel-Installer.exe .
 
 ## License
 
-MIT © [Maige](https://x.com/unflwMaige)
+MIT © [Maige](https://x.com/Samoye)
 
 ⭐ If Babel makes Discord easier to understand, consider starring the repository.

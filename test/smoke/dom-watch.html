@@ -1,0 +1,27 @@
+<!doctype html><meta charset="utf-8"><title>Babel native observer smoke</title>
+<style>body{font:16px system-ui;margin:24px;max-width:900px}#results{white-space:pre-wrap}section{border:1px solid #888;padding:16px}#composer{min-height:32px;width:350px;border:1px solid #888}button{font:inherit;margin:12px 8px 12px 0}</style>
+<h1>Babel DOM observer smoke</h1><p>This page exercises the production watcher with real MutationObserver and ResizeObserver.</p>
+<div id="outside"></div><section class="chatContentSmoke"><div data-list-id="chat-messages"></div><div id="composer" role="textbox" contenteditable="true">Composer</div></section>
+<button id="resize">Resize composer</button><button id="disable">Disable observers</button><pre id="results">Running…</pre>
+<script src="../../src/mod/ui/dom-watch.js"></script>
+<script>
+(async()=>{
+ const output=document.getElementById('results'),rows=[];
+ const write=(name,pass,detail='')=>{rows.push(`${pass?'PASS':'FAIL'} ${name} ${detail}`);output.textContent=rows.join('\n')};
+ const flush=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+ let passes=0,examined=0,positions=0,observers=0,timers=0;
+ function wrap(Original){return class{constructor(callback){this.observer=new Original(callback);this.active=false}observe(...args){if(!this.active){this.active=true;observers++}this.observer.observe(...args)}disconnect(){if(this.active){this.active=false;observers--}this.observer.disconnect()}}}
+ const surface={location:window.location,MutationObserver:wrap(MutationObserver),ResizeObserver:wrap(ResizeObserver),requestAnimationFrame:requestAnimationFrame.bind(window),cancelAnimationFrame:cancelAnimationFrame.bind(window),addEventListener:addEventListener.bind(window),removeEventListener:removeEventListener.bind(window),setInterval:(...args)=>{timers++;return setInterval(...args)},clearInterval:id=>{if(id!=null)timers--;clearInterval(id)}};
+ const watch=new BabelDomWatch({document,window:surface,onMessages:messages=>{passes++;examined+=messages.length},onPosition:()=>{positions++;document.getElementById('composer').getBoundingClientRect()},onRoute:()=>{},sendEnabled:()=>true,findMessage:node=>(node.nodeType===3?node.parentElement:node)?.closest?.('[id^="chat-messages-"]')});
+ watch.start();await flush();await flush();write('empty list attaches',Boolean(watch.list));
+ const before=passes;for(let i=0;i<200;i++)document.getElementById('outside').append(document.createElement('span'));await flush();write('200 outside mutations cause zero passes',passes===before);
+ let message=document.createElement('div');message.id='chat-messages-101';message.textContent='Original';watch.list.append(message);const examinedBefore=examined,passBefore=passes;await flush();write('one new message causes one pass examining one message',passes===passBefore+1&&examined===examinedBefore+1);
+ const block=document.createElement('div');block.className='dtm-translation-block';block.textContent='Translated';const ownBefore=passes;message.append(block);await flush();block.remove();await flush();write('own insertions and removals cause zero passes',passes===ownBefore);
+ const editBefore=passes;message.firstChild.data='Edited';await flush();write('characterData edit is observed',passes===editBefore+1);
+ const oldList=watch.list;const replacement=document.createElement('div');replacement.dataset.listId='chat-messages';oldList.replaceWith(replacement);watch.health();await flush();write('empty remount attaches',watch.list===replacement);
+ document.getElementById('resize').onclick=async()=>{const n=positions;document.getElementById('composer').style.width='450px';await flush();await flush();write('native ResizeObserver updates composer geometry',positions>n)};
+ document.getElementById('disable').onclick=()=>{watch.stop();write('disabled has zero observers and timers',observers===0&&timers===0,`observers=${observers} timers=${timers}`)};
+ await flush();await flush();const idle={...watch.counters};write('60 second idle check started',true);
+ setTimeout(()=>{write('60 second idle has zero full scans and geometry reads',watch.counters.fullScans===idle.fullScans&&watch.counters.layoutReads===idle.layoutReads,`scans=${watch.counters.fullScans-idle.fullScans} geometry=${watch.counters.layoutReads-idle.layoutReads} selectors=${watch.counters.selectorQueries-idle.selectorQueries}`);output.dataset.complete='true'},60000);
+})().catch(error=>{document.getElementById('results').textContent=`FAIL ${error.stack}`});
+</script>

@@ -1,299 +1,419 @@
 "use strict";
-
-const fs = require("node:fs");
-const path = require("node:path");
-
-const { MODEL_PROVIDERS, BABEL_VERSION } = requireShared("defaults");
+const fs = require("node:fs"),
+  path = require("node:path");
+const { Writer } = require("./core/storage");
+const { KeyStore } = require("./core/key-store");
+const { SettingsStore } = require("./core/settings-store");
+const { CacheStore } = require("./core/cache-store");
+const { TranslationService } = require("./core/translation-service");
+const { IpcGuard, mainPreload } = require("./core/ipc-guard");
+const { createProvider } = require("./core/provider-fetch");
+const { publicFailure, failure } = require("./core/errors");
 const { normalizeSettings } = requireShared("settings");
-const {
-  buildAnthropicMessagesUrl,
-  buildChatCompletionsUrl,
-  buildGeminiModelsUrl,
-  buildOpenAIModelsUrl,
-  buildTranslationMessages,
-  parseAnthropicResponse,
-  parseModelListResponse,
-  parseOpenAICompatibleResponse,
-  resolveModelConfig
-} = requireShared("translate");
-
+const { resolveUiLocale, normalizePreference } = requireShared("ui-locale");
+let sessionSystemLocale;
+let localeDiagnosticSent = false;
+function getSystemLocale() {
+  if (sessionSystemLocale) return sessionSystemLocale;
+  let app;
+  try { app = electronApi().app; } catch (_) {}
+  if (app?.isReady?.() === false) return "en";
+  let preferences;
+  try { preferences = app?.getPreferredSystemLanguages?.(); } catch (_) {}
+  if (!Array.isArray(preferences) || !preferences.length || !preferences.some(value => normalizePreference(value))) {
+    if (!localeDiagnosticSent) console.warn("[Babel] System UI language unavailable; using en.");
+    localeDiagnosticSent = true;
+  }
+  return sessionSystemLocale = resolveUiLocale(preferences);
+}
+const { BABEL_VERSION } = requireShared("defaults");
 const CHANNELS = Object.freeze({
   getSettings: "dtm:get-settings",
-  saveSettings: "dtm:save-settings",
+  saveConfig: "dtm:save-config",
+  patchSendBox: "dtm:patch-send-box",
   getApiKeyStatus: "dtm:get-api-key-status",
-  setApiKey: "dtm:set-api-key",
   translate: "dtm:translate",
+  cancel: "dtm:cancel",
   testConnection: "dtm:test-connection",
   listModels: "dtm:list-models",
   openSettingsFile: "dtm:open-settings-file",
   openExternal: "dtm:open-external",
-  loadCache: "dtm:load-cache",
-  saveCache: "dtm:save-cache",
-  checkUpdate: "dtm:check-update"
+  cacheStatus: "dtm:cache-status",
+  clearCache: "dtm:clear-cache",
+  checkUpdate: "dtm:check-update",
+  configChanged: "dtm:config-changed",
 });
-
-const MAX_PERSISTED_CACHE = 1000;
-// The releases ATOM feed is served from github.com (not api.github.com), so it is NOT
-// subject to the API's 60-requests/hour-per-IP limit — important because many users
-// share a VPN exit IP and would otherwise collectively exhaust it.
-const GITHUB_RELEASES_ATOM = "https://github.com/itsmaiGe/babel/releases.atom";
-const UPDATE_CHECK_TIMEOUT_MS = 8000;
-
-const MAX_TRANSLATE_CHARS = 12000;
-const MODEL_LIST_TIMEOUT_MS = 30000;
-const TRANSLATE_TIMEOUT_MS = 30000;
-const API_KEY_REQUIRED_PROVIDERS = new Set(["openai", "google", "anthropic", "deepseek", "zhipu", "kimi", "openrouter"]);
-
-let installed = false;
-let patchedBrowserWindow = false;
-let registeredIpc = false;
-let runtimeElectron = null;
-
-function electronApi() {
-  return runtimeElectron || require("electron");
-}
-
-// Prefer Electron's net.fetch over Node's global fetch: it routes through Chromium's
-// network stack and honors the system / Discord proxy. Node's fetch (undici) ignores
-// OS proxy settings entirely, which is the usual cause of "TypeError: fetch failed"
-// for users who only reach a provider through a proxy or VPN. Falls back to global
-// fetch when net.fetch isn't available.
-function httpFetch(url, options) {
-  try {
-    const electron = electronApi();
-    if (electron && electron.net && typeof electron.net.fetch === "function") {
-      return electron.net.fetch(url, options);
-    }
-  } catch (_error) {
-    // Fall through to global fetch.
-  }
-  return fetch(url, options);
-}
-
-// "TypeError: fetch failed" means the request never reached the server (DNS, refused,
-// reset, timeout, TLS) — not an API error. Detect it so we can show a clear reason.
-function isNetworkFailure(error) {
-  if (!error || error.name === "AbortError") return false;
-  if (error instanceof TypeError) return true;
-  if (error.cause) return true;
-  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_|certificate|self[- ]signed/i
-    .test(String(error.message || error));
-}
-
-function networkFailureMessage(error, contactedUrl) {
-  const cause = error && error.cause;
-  const code = String((cause && (cause.code || cause.errno)) || "").toUpperCase();
-  let host = "";
-  try {
-    host = new URL(contactedUrl).host;
-  } catch (_error) {
-    host = "";
-  }
-  const reasons = {
-    ENOTFOUND: "无法解析服务器地址（DNS 失败，多半是被墙或网络不通）",
-    EAI_AGAIN: "无法解析服务器地址（DNS 失败）",
-    ECONNREFUSED: "连接被拒绝",
-    ECONNRESET: "连接被重置",
-    ETIMEDOUT: "连接超时",
-    CERT_HAS_EXPIRED: "服务器证书已过期",
-    UNABLE_TO_VERIFY_LEAF_SIGNATURE: "证书校验失败"
-  };
-  const reason = reasons[code] || "无法连接到服务器";
-  const where = host ? `（${host}）` : "";
-  const tail = code ? ` [${code}]` : "";
-  return `网络连接失败：${reason}${where}。请检查网络或代理后重试${tail}`;
-}
-
+const GITHUB_RELEASES_ATOM = "https://github.com/itsmaiGe/babel/releases.atom",
+  UPDATE_CHECK_TIMEOUT_MS = 8000;
+let runtimeElectron = null,
+  runtime = null,
+  installed = false,
+  initializing = false,
+  registeredIpc = false;
+const auxiliary = new Map();
+const guard = new IpcGuard((owner) => {
+  if (runtime)
+    runtime.service.cancel(
+      owner,
+      [
+        ...runtime.service.consumers.values(),
+        ...runtime.service.admissions.values(),
+      ]
+        .filter((c) => c.owner === owner)
+        .map((c) => c.requestId),
+    );
+});
 function requireShared(name) {
   try {
     return require(`./shared/${name}`);
   } catch (error) {
-    if (error && error.code === "MODULE_NOT_FOUND") {
-      return require(`../shared/${name}`);
-    }
+    if (error.code === "MODULE_NOT_FOUND") return require(`../shared/${name}`);
     throw error;
   }
 }
-
-function install() {
-  if (installed) return;
-  installed = true;
-
-  const electron = require("electron");
-  runtimeElectron = electron;
-  patchBrowserWindow();
-  registerIpcHandlers(electron);
+function electronApi() {
+  return runtimeElectron || require("electron");
 }
-
-function patchBrowserWindow() {
-  if (patchedBrowserWindow) return;
-  patchedBrowserWindow = true;
-
-  const electron = require("electron");
-  const OriginalBrowserWindow = electron.BrowserWindow;
-  const translatorPreload = path.join(__dirname, "preload.js");
-
-  class PatchedBrowserWindow extends OriginalBrowserWindow {
-    constructor(options) {
-      super(patchBrowserWindowOptions(options, translatorPreload));
-    }
-  }
-
-  Object.assign(PatchedBrowserWindow, OriginalBrowserWindow);
-  Object.defineProperty(PatchedBrowserWindow, "name", {
-    configurable: true,
-    value: "BrowserWindow"
+function getStoreDir() {
+  return path.join(
+    electronApi().app.getPath("userData"),
+    "discord-translator-mod",
+  );
+}
+function getRuntime() {
+  if (runtime) return runtime;
+  const electron = electronApi(),
+    writer = new Writer(),
+    keys = new KeyStore(getStoreDir(), electron, writer);
+  const settings = new SettingsStore(
+    getStoreDir(),
+    writer,
+    keys,
+    (snapshot) => {
+      if (runtime) {
+        if (snapshot.executionRevision !== runtime.lastExecutionRevision) {
+          runtime.service.invalidate(snapshot.executionRevision);
+          runtime.lastExecutionRevision = snapshot.executionRevision;
+        }
+      }
+      guard.broadcast(CHANNELS.configChanged, {
+        settingsRevision: snapshot.settingsRevision,
+        executionRevision: snapshot.executionRevision,
+      });
+    },
+  );
+  const cache = new CacheStore(getStoreDir(), writer);
+  const provider = createProvider(electron);
+  const service = new TranslationService({
+    snapshot: () => settings.snapshot(),
+    credential: (model) => keys.credential(model),
+    provider,
+    cache,
   });
-
-  // Stringify like the native constructor. Client-mod detectors (e.g. BetterDiscord
-  // warns when electron.BrowserWindow.toString() reads "class X extends Y {") would
-  // otherwise flag our subclass as a conflicting mod and nag the user on every launch.
-  // This is purely cosmetic — construction and behaviour are unchanged.
-  Object.defineProperty(PatchedBrowserWindow, "toString", {
-    configurable: true,
-    writable: true,
-    value: () => "function BrowserWindow() { [native code] }"
-  });
-
-  const electronPath = require.resolve("electron");
-  if (require.cache[electronPath]) {
-    delete require.cache[electronPath].exports;
-    require.cache[electronPath].exports = {
-      ...electron,
-      BrowserWindow: PatchedBrowserWindow
-    };
-  }
-
-  try {
-    Object.defineProperty(electron, "BrowserWindow", {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: PatchedBrowserWindow
+  runtime = { writer, keys, settings, cache, provider, service, lastExecutionRevision: settings.executionRevision };
+  settings.startWatching();
+  electron.app.once?.("before-quit", () => settings.stopWatching());
+  runtime.ready = keys
+    .migrate(settings.settings, settings.savedCustomEndpoint)
+    .catch(() => {
+      settings.status = {
+        code: "STORAGE",
+        reason: "KEY_MIGRATION",
+        message: "密钥迁移失败，原文件已保留。",
+      };
     });
-  } catch (_error) {
-    // Discord may expose Electron as a guarded object; require.cache patching above is the important path.
-  }
+  return runtime;
 }
-
+async function getSettings() {
+  const r = getRuntime();
+  await r.ready;
+  await r.cache.ready;
+  return {
+    ...r.settings.snapshot(),
+    ui: { systemLocale: getSystemLocale() },
+    keyStatus: r.keys.status(r.settings.settings.model),
+    credentialContext: r.keys.displayContext(r.settings.settings.model),
+    cache: r.cache.status(),
+    translation: r.service.status(),
+  };
+}
+async function saveConfig(request) {
+  const r = getRuntime();
+  await r.ready;
+  const snapshot = await r.settings.save(request);
+  return {
+    ...snapshot,
+    ui: { systemLocale: getSystemLocale() },
+    keyStatus: r.keys.status(snapshot.settings.model),
+    credentialContext: r.keys.displayContext(snapshot.settings.model),
+    cache: r.cache.status(),
+  };
+}
 function patchBrowserWindowOptions(inputOptions, translatorPreload) {
-  const options = inputOptions && typeof inputOptions === "object" ? { ...inputOptions } : {};
-  options.webPreferences = { ...(options.webPreferences || {}) };
-
-  const originalPreload = typeof options.webPreferences.preload === "string"
-    ? options.webPreferences.preload
-    : "";
-
-  const additionalArguments = Array.isArray(options.webPreferences.additionalArguments)
-    ? [...options.webPreferences.additionalArguments]
-    : [];
-
-  const alreadyPatched = additionalArguments.includes("--dtm-preload=1") ||
-    originalPreload.includes("discord-translator-mod/preload.js");
-
-  if (!alreadyPatched && !originalPreload.includes("splashScreenPreload.js")) {
-    if (originalPreload) {
-      additionalArguments.push(`--dtm-original-preload=${Buffer.from(originalPreload, "utf8").toString("base64")}`);
-    }
-
-    additionalArguments.push("--dtm-preload=1");
-    options.webPreferences.preload = translatorPreload;
-    options.webPreferences.additionalArguments = additionalArguments;
-    options.webPreferences.sandbox = false;
-    options.webPreferences.contextIsolation = false;
+  const options = {
+      ...inputOptions,
+      webPreferences: { ...(inputOptions?.webPreferences || {}) },
+    },
+    original = options.webPreferences.preload;
+  const args = [...(options.webPreferences.additionalArguments || [])].filter(arg => !String(arg).startsWith("--dtm-ui-locale="));
+  if (mainPreload(original)) {
+    if (!args.includes("--dtm-preload=1")) args.push(
+      `--dtm-original-preload=${Buffer.from(original).toString("base64")}`,
+      "--dtm-preload=1",
+    );
+    args.push(`--dtm-ui-locale=${getSystemLocale()}`);
+    Object.assign(options.webPreferences, {
+      preload: translatorPreload,
+      additionalArguments: args,
+      sandbox: false,
+      contextIsolation: false,
+    });
   }
-
   return options;
 }
-
+function replaceBrowserWindow(electron, replacement) {
+  const descriptor = Object.getOwnPropertyDescriptor(electron, "BrowserWindow");
+  let restore;
+  if (!descriptor || descriptor.configurable) {
+    Object.defineProperty(electron, "BrowserWindow", {
+      configurable: true,
+      enumerable: descriptor?.enumerable ?? true,
+      writable: true,
+      value: replacement,
+    });
+    restore = () => {
+      if (descriptor) Object.defineProperty(electron, "BrowserWindow", descriptor);
+      else delete electron.BrowserWindow;
+    };
+  } else if (Object.hasOwn(descriptor, "value") && descriptor.writable) {
+    Object.defineProperty(electron, "BrowserWindow", { value: replacement });
+    restore = () => Object.defineProperty(electron, "BrowserWindow", descriptor);
+  } else {
+    // Electron 42 locks individual API getters, but its cached exports getter
+    // is configurable. Never assign to that getter or eagerly spread API values.
+    const cached = require.cache[require.resolve("electron")],
+      exportsDescriptor = cached && Object.getOwnPropertyDescriptor(cached, "exports");
+    if (!exportsDescriptor || (!exportsDescriptor.configurable &&
+        !(Object.hasOwn(exportsDescriptor, "value") && exportsDescriptor.writable))) {
+      throw new Error("Electron BrowserWindow is not replaceable.");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(electron);
+    descriptors.BrowserWindow = { configurable: true, enumerable: descriptor.enumerable, writable: true, value: replacement };
+    const api = Object.defineProperties(Object.create(Object.getPrototypeOf(electron)), descriptors);
+    Object.defineProperty(cached, "exports", exportsDescriptor.configurable
+      ? { configurable: true, enumerable: exportsDescriptor.enumerable, get: () => api }
+      : { value: api });
+    restore = () => Object.defineProperty(cached, "exports", exportsDescriptor);
+    electron = require("electron");
+  }
+  if (electron.BrowserWindow !== replacement) {
+    restore();
+    throw new Error("Electron BrowserWindow hook was not applied.");
+  }
+  return { electron, restore };
+}
+function install() {
+  if (installed || initializing) return;
+  initializing = true;
+  let restore;
+  const previousElectron = runtimeElectron;
+  try {
+    const electron = electronApi();
+    runtimeElectron = electron;
+    if (electron.app?.isReady?.() !== false) getSystemLocale();
+    else electron.app.whenReady?.().then(getSystemLocale);
+    const Original = electron.BrowserWindow;
+    class Patched extends Original {
+      constructor(options) {
+        const positive = mainPreload(options?.webPreferences?.preload);
+        super(
+          patchBrowserWindowOptions(options, path.join(__dirname, "preload.js")),
+        );
+        if (positive) guard.track(this);
+      }
+    }
+    // Static APIs remain inherited, including any earlier injector's additions.
+    Object.defineProperty(Patched, "name", { value: "BrowserWindow" });
+    Object.defineProperty(Patched, "toString", {
+      value: () => "function BrowserWindow() { [native code] }",
+    });
+    const binding = replaceBrowserWindow(electron, Patched);
+    restore = binding.restore;
+    runtimeElectron = binding.electron;
+    registerIpcHandlers(binding.electron);
+    installed = true;
+  } catch (error) {
+    restore?.();
+    runtimeElectron = previousElectron;
+    throw error;
+  } finally {
+    initializing = false;
+  }
+}
+const object = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const bounded = (value) => {
+  try {
+    return object(value) && JSON.stringify(value).length <= 32768;
+  } catch (_) {
+    return false;
+  }
+};
+const empty = (value) => value === undefined || value === null;
+const validators = {
+  getSettings: empty,
+  cacheStatus: empty,
+  clearCache: empty,
+  openSettingsFile: empty,
+  checkUpdate: empty,
+  saveConfig: (value) =>
+    bounded(value) &&
+    Number.isSafeInteger(value.baseSettingsRevision) &&
+    object(value.settings) &&
+    object(value.key) &&
+    ["keep", "replace", "remove", "link", "removeLegacy", "reset"].includes(
+      value.key.action,
+    ),
+  patchSendBox: (value) =>
+    object(value) &&
+    Object.keys(value).every(
+      (key) =>
+        ["x", "y", "width"].includes(key) &&
+        (value[key] === null ||
+          (Number.isFinite(value[key]) && Math.abs(value[key]) <= 100000)),
+    ),
+  getApiKeyStatus: (value) => empty(value) || bounded(value),
+  translate: (value) =>
+    bounded(value) &&
+    typeof value.requestId === "string" &&
+    Number.isSafeInteger(value.expectedExecutionRevision),
+  cancel: (value) =>
+    object(value) &&
+    Array.isArray(value.requestIds) &&
+    value.requestIds.length <= 64 &&
+    value.requestIds.every(
+      (id) => typeof id === "string" && /^[\w:-]{1,80}$/.test(id),
+    ),
+  testConnection: (value) =>
+    bounded(value) &&
+    object(value.settings) &&
+    (value.apiKey === undefined ||
+      (typeof value.apiKey === "string" && value.apiKey.length <= 8192)),
+  listModels: (value) => validators.testConnection(value),
+  openExternal: (value) => typeof value === "string" && value.length <= 2048,
+};
 function registerIpcHandlers(electron) {
   if (registeredIpc) return;
-  registeredIpc = true;
-
-  const { ipcMain } = electron;
-
-  ipcMain.handle(CHANNELS.getSettings, () => readSettings());
-  ipcMain.handle(CHANNELS.saveSettings, (_event, settings) => saveSettings(settings));
-  ipcMain.handle(CHANNELS.getApiKeyStatus, () => getApiKeyStatus());
-  ipcMain.handle(CHANNELS.setApiKey, (_event, request) => setApiKey(request));
-  ipcMain.handle(CHANNELS.translate, (_event, request) => translate(request));
-  ipcMain.handle(CHANNELS.testConnection, (_event, request) => testConnection(request));
-  ipcMain.handle(CHANNELS.listModels, (_event, request) => listModels(request));
-  ipcMain.handle(CHANNELS.openSettingsFile, () => openSettingsFile(electron));
-  ipcMain.handle(CHANNELS.openExternal, (_event, url) => openExternal(electron, url));
-  ipcMain.handle(CHANNELS.loadCache, () => loadTranslationCache());
-  ipcMain.handle(CHANNELS.saveCache, (_event, cache) => saveTranslationCache(cache));
-  ipcMain.handle(CHANNELS.checkUpdate, () => checkForUpdate());
-}
-
-function getStoreDir() {
-  return path.join(electronApi().app.getPath("userData"), "discord-translator-mod");
-}
-
-function getCachePath() {
-  return path.join(getStoreDir(), "cache.json");
-}
-
-function loadTranslationCache() {
+  const handlers = {
+    getSettings: () => getSettings(),
+    saveConfig: (_, value) => saveConfig(value),
+    patchSendBox: (_, value) => getRuntime().settings.patchSendBox(value),
+    getApiKeyStatus: (_, value) => getApiKeyStatus(value),
+    translate: async (owner, value) => {
+      await getRuntime().ready;
+      return getRuntime().service.translate(owner, value);
+    },
+    cancel: (owner, value) =>
+      getRuntime().service.cancel(owner, value.requestIds),
+    testConnection: (owner, value) =>
+      boundedAux(owner, "test", () => testConnection(value)),
+    listModels: (owner, value) =>
+      boundedAux(owner, "models", () => listModels(value)),
+    openSettingsFile: () => openSettingsFile(electron),
+    openExternal: (_, value) => openExternal(electron, value),
+    cacheStatus: async () => {
+      await getRuntime().cache.ready;
+      return getRuntime().cache.status();
+    },
+    clearCache: async () => {
+      await getRuntime().cache.clear();
+      return { ok: true, ...getRuntime().cache.status() };
+    },
+    checkUpdate: () => checkForUpdate(),
+  };
+  const added = [];
   try {
-    const filePath = getCachePath();
-    if (!fs.existsSync(filePath)) return {};
-    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
-  } catch (_error) {
-    return {};
+    for (const [name, handle] of Object.entries(handlers)) {
+      electron.ipcMain.handle(CHANNELS[name], async (event, value) => {
+        try {
+          const owner = guard.authorize(event, validators[name], value);
+          return await handle(owner, value);
+        } catch (error) {
+          return publicFailure(error);
+        }
+      });
+      added.push(CHANNELS[name]);
+    }
+    registeredIpc = true;
+  } catch (error) {
+    for (const channel of added) electron.ipcMain.removeHandler(channel);
+    throw error;
   }
 }
-
-function saveTranslationCache(cache) {
-  if (!cache || typeof cache !== "object" || Array.isArray(cache)) return { ok: false };
-  // Keep only the most-recent entries so the file can never grow without bound.
-  const entries = Object.entries(cache).filter(([, v]) => typeof v === "string").slice(-MAX_PERSISTED_CACHE);
-  fs.mkdirSync(getStoreDir(), { recursive: true });
-  fs.writeFileSync(getCachePath(), JSON.stringify(Object.fromEntries(entries)), "utf8");
-  return { ok: true, count: entries.length };
-}
-
-function getSettingsPath() {
-  return path.join(getStoreDir(), "settings.json");
-}
-
-function readSettings() {
+async function boundedAux(owner, operation, run) {
+  const key = `${owner}:${operation}`;
+  if (auxiliary.has(key)) throw failure("BUSY");
+  auxiliary.set(key, true);
   try {
-    const filePath = getSettingsPath();
-    if (!fs.existsSync(filePath)) return normalizeSettings({});
-    return normalizeSettings(JSON.parse(fs.readFileSync(filePath, "utf8")));
-  } catch (_error) {
-    return normalizeSettings({});
+    return await run();
+  } finally {
+    auxiliary.delete(key);
   }
 }
-
-function saveSettings(settings) {
-  const normalized = normalizeSettings(settings);
-  fs.mkdirSync(getStoreDir(), { recursive: true });
-  fs.writeFileSync(getSettingsPath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
-  return normalized;
+function getApiKeyStatus(request = {}) {
+  const r = getRuntime(),
+    model = normalizeSettings({
+      model: { ...r.settings.settings.model, ...request },
+    }).model;
+  return r.keys.status(model);
 }
-
+async function testConnection(request) {
+  const r = getRuntime();
+  await r.ready;
+  const settings = normalizeSettings(request?.settings);
+  settings.enabled = true;
+  settings.sendTranslation.enabled = true;
+  const { apiKey } = r.keys.credential(settings.model, request?.apiKey);
+  const text = await r.provider.translate({
+    settings,
+    apiKey,
+    direction: "read",
+    text: "Hello, this is a connection test.",
+  });
+  return { ok: true, text, endpoint: settings.model.baseUrl };
+}
+async function listModels(request) {
+  const r = getRuntime();
+  await r.ready;
+  const settings = normalizeSettings(request?.settings),
+    { apiKey } = r.keys.credential(settings.model, request?.apiKey);
+  return { ok: true, models: await r.provider.models({ settings, apiKey }) };
+}
 async function openSettingsFile(electron) {
-  const filePath = getSettingsPath();
-  if (!fs.existsSync(filePath)) saveSettings(readSettings());
-  const directoryPath = path.dirname(filePath);
-  const error = await electron.shell.openPath(directoryPath);
-  if (error) throw new Error("无法打开配置文件夹，请稍后重试。");
-  return { ok: true, path: directoryPath };
+  const directory = getStoreDir();
+  await fs.promises.mkdir(directory, { recursive: true });
+  const error = await electron.shell.openPath(directory);
+  if (error) throw failure("STORAGE", null, { reason: "OPEN_FOLDER" });
+  return { ok: true, path: directory };
 }
-
 async function openExternal(electron, url) {
-  const value = String(url || "").trim();
-  if (!/^https:\/\//i.test(value)) return { ok: false, error: "只允许打开 HTTPS 链接。" };
-  await electron.shell.openExternal(value);
-  return { ok: true, url: value };
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    return publicFailure(failure("INPUT", null, { reason: "EXTERNAL_HTTPS" }));
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password)
+    return publicFailure(failure("INPUT", null, { reason: "EXTERNAL_HTTPS" }));
+  await electron.shell.openExternal(parsed.toString());
+  return { ok: true, url: parsed.toString() };
 }
-
 function parseVersion(value) {
-  const core = String(value || "").trim().replace(/^v/i, "").split(/[-+]/)[0];
-  return core.split(".").map(part => parseInt(part, 10) || 0);
+  const core = String(value || "")
+    .trim()
+    .replace(/^v/i, "")
+    .split(/[-+]/)[0];
+  return core.split(".").map((part) => parseInt(part, 10) || 0);
 }
 
 // Returns 1 if a > b, -1 if a < b, 0 if equal (numeric semver-ish, ignores pre-release).
@@ -316,11 +436,14 @@ async function checkForUpdate() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
   try {
-    const response = await httpFetch(GITHUB_RELEASES_ATOM, {
-      method: "GET",
-      headers: { "User-Agent": "Babel-Discord-Translator" },
-      signal: controller.signal
-    });
+    const response = await createProvider(runtimeElectron || {}).http(
+      GITHUB_RELEASES_ATOM,
+      {
+        method: "GET",
+        headers: { "User-Agent": "Babel-Discord-Translator" },
+        signal: controller.signal,
+      },
+    );
     if (!response.ok) return { ok: false, current: BABEL_VERSION };
 
     const xml = await response.text();
@@ -334,7 +457,7 @@ async function checkForUpdate() {
       current: BABEL_VERSION,
       latest: tag.replace(/^v/i, ""),
       updateAvailable: compareVersions(tag, BABEL_VERSION) > 0,
-      url: `https://github.com/itsmaiGe/babel/releases/tag/${tag}`
+      url: `https://github.com/itsmaiGe/babel/releases/tag/${tag}`,
     };
   } catch (_error) {
     return { ok: false, current: BABEL_VERSION };
@@ -343,351 +466,88 @@ async function checkForUpdate() {
   }
 }
 
-function getApiKeysPath() {
-  return path.join(getStoreDir(), "api-keys.json");
+module.exports = { install, CHANNELS };
+/* @dtm-test-only:start */
+function setElectronForTests(electron) {
+  sessionSystemLocale = undefined; localeDiagnosticSent = false;
+  runtime?.cache && clearTimeout(runtime.cache.timer);
+  runtimeElectron = electron;
+  runtime = null;
 }
-
-function readApiKeyStore() {
-  let store;
-  try {
-    const filePath = getApiKeysPath();
-    if (!fs.existsSync(filePath)) return {};
-    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    store = data && typeof data === "object" && !Array.isArray(data) ? data : {};
-  } catch (_error) {
-    return {};
-  }
-  if (!electronApi().safeStorage?.isEncryptionAvailable?.()) return store;
-  let migrated = false;
-  for (const [provider, entry] of Object.entries(store)) {
-    if (entry && entry.enc === "plain") {
-      store[provider] = encryptApiKey(decryptApiKey(entry));
-      migrated = true;
-    }
-  }
-  if (migrated) writeApiKeyStore(store);
-  return store;
+async function setApiKey(request) {
+  const r = getRuntime();
+  await r.ready;
+  const model = normalizeSettings({
+    model: {
+      provider: request?.provider || "custom",
+      baseUrl: request?.baseUrl,
+    },
+  }).model;
+  const snapshot = r.settings.snapshot();
+  return saveConfig({
+    baseSettingsRevision: snapshot.settingsRevision,
+    settings: {
+      ...snapshot.settings,
+      model: { ...snapshot.settings.model, ...model },
+    },
+    key: request.apiKey
+      ? { action: "replace", value: request.apiKey }
+      : { action: "remove" },
+  });
 }
-
-function writeApiKeyStore(store) {
-  fs.mkdirSync(getStoreDir(), { recursive: true });
-  const temp = `${getApiKeysPath()}.tmp`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(store)}\n`, { mode: 0o600 });
-    fs.renameSync(temp, getApiKeysPath());
-  } finally {
-    fs.rmSync(temp, { force: true });
-  }
-}
-
-function encryptApiKey(value) {
-  const safeStorage = electronApi().safeStorage;
-  if (safeStorage && safeStorage.isEncryptionAvailable && safeStorage.isEncryptionAvailable()) {
-    return { enc: "safeStorage", value: safeStorage.encryptString(value).toString("base64") };
-  }
-  throw new Error("系统加密暂不可用，API Key 未保存。请重启 Discord 后重试。");
-}
-
-function decryptApiKey(entry) {
-  if (!entry || typeof entry !== "object") return "";
-  try {
-    if (entry.enc === "safeStorage") {
-      const safeStorage = electronApi().safeStorage;
-      if (!safeStorage || !safeStorage.isEncryptionAvailable || !safeStorage.isEncryptionAvailable()) return "";
-      return safeStorage.decryptString(Buffer.from(String(entry.value || ""), "base64"));
-    }
-    return Buffer.from(String(entry.value || ""), "base64").toString("utf8");
-  } catch (_error) {
-    return "";
-  }
-}
-
-function providerKeyId(provider) {
-  return MODEL_PROVIDERS.some(item => item.value === provider) ? provider : "custom";
-}
-
-function getStoredApiKey(provider) {
-  return decryptApiKey(readApiKeyStore()[providerKeyId(provider)]);
-}
-
-function getApiKey(provider) {
-  return getStoredApiKey(provider);
-}
-
-function getApiKeyStatus() {
-  const store = readApiKeyStore();
-  const status = {};
-  const previews = {};
-  for (const provider of MODEL_PROVIDERS) {
-    const key = decryptApiKey(store[provider.value]);
-    status[provider.value] = key.length > 0;
-    if (key) previews[provider.value] = maskApiKey(key);
-  }
-  status.previews = previews;
-  return status;
-}
-
-function maskApiKey(key) {
-  const value = String(key || "");
-  if (!value) return "";
-  if (value.length <= 8) return `${value.slice(0, 2)}…${value.slice(-2)}`;
-  return `${value.slice(0, 4)}…${value.slice(-4)}`;
-}
-
-function parseApiKeyRequest(request) {
-  if (request && typeof request === "object" && !Array.isArray(request)) {
-    return {
-      provider: providerKeyId(request.provider),
-      apiKey: String(request.apiKey || "").trim()
-    };
-  }
-
-  return {
-    provider: "custom",
-    apiKey: String(request || "").trim()
-  };
-}
-
-function setApiKey(request) {
-  const parsed = parseApiKeyRequest(request);
-  const store = readApiKeyStore();
-  if (!parsed.apiKey) {
-    delete store[parsed.provider];
-    writeApiKeyStore(store);
-    return { ok: true, hasApiKey: false };
-  }
-
-  store[parsed.provider] = encryptApiKey(parsed.apiKey);
-  writeApiKeyStore(store);
-  return { ok: true, hasApiKey: true };
-}
-
-async function translate(request) {
-  const settings = readSettings();
-  const modelConfig = resolveModelConfig(settings.model);
-  return translateWithSettings(request, settings, getApiKey(modelConfig.provider));
-}
-
-async function testConnection(request) {
-  const settings = normalizeSettings(request && request.settings);
-  settings.enabled = true;
-  settings.readTranslation.enabled = true;
-
-  return translateWithSettings({
-    direction: "read",
-    text: "Hello, this is a connection test."
-  }, settings, request && Object.prototype.hasOwnProperty.call(request, "apiKey")
-    ? String(request.apiKey || "").trim()
-    : getApiKey(resolveModelConfig(settings.model).provider));
-}
-
-async function listModels(request) {
-  const settings = normalizeSettings(request && request.settings);
-  const modelConfig = resolveModelConfig(settings.model);
-  const apiKey = request && Object.prototype.hasOwnProperty.call(request, "apiKey")
-    ? String(request.apiKey || "").trim()
-    : getApiKey(modelConfig.provider);
-  requireApiKey(modelConfig, apiKey);
-  const requestData = buildModelListRequest(modelConfig, apiKey);
-  const body = await fetchProviderJson(requestData, "GET", MODEL_LIST_TIMEOUT_MS, "请求超时，请重试。");
-  const models = parseModelListResponse(body, modelConfig.provider);
-  if (models.length === 0) throw new Error("没有可用模型，请检查模型地址和 API 权限。");
-  return { ok: true, models };
-}
-
 async function translateWithSettings(request, settings, apiKey) {
-  const direction = request && request.direction === "send" ? "send" : "read";
-  const text = String((request && request.text) || "").trim();
-
-  if (!settings.enabled) throw new Error("Babel 已关闭。");
-  if (direction === "send" && !settings.sendTranslation.enabled) throw new Error("发送翻译输入框已关闭。");
-  if (!text) throw new Error("没有可翻译的文本。");
-  if (text.length > MAX_TRANSLATE_CHARS) throw new Error(`文本过长，最多支持 ${MAX_TRANSLATE_CHARS} 个字符。`);
-
-  const modelConfig = resolveModelConfig(settings.model);
-  requireApiKey(modelConfig, apiKey);
-  const messages = buildTranslationMessages({ text, direction, settings });
-  const requestData = buildProviderRequest(modelConfig, messages, apiKey);
-  const body = await fetchProviderJson(requestData, "POST", TRANSLATE_TIMEOUT_MS,
-    `翻译超时（超过 ${Math.round(TRANSLATE_TIMEOUT_MS / 1000)} 秒），已自动取消，请重试。`);
   return {
     ok: true,
-    text: requestData.protocol === "anthropic"
-      ? parseAnthropicResponse(body)
-      : parseOpenAICompatibleResponse(body)
+    text: await createProvider(runtimeElectron || {}).translate({
+      settings,
+      apiKey,
+      ...request,
+    }),
   };
 }
-
-async function fetchProviderJson(requestData, method, timeoutMs, timeoutMessage) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await httpFetch(requestData.url, {
-      method,
-      headers: requestData.headers,
-      signal: controller.signal,
-      body: method === "POST" ? JSON.stringify(requestData.body) : undefined
-    });
-    const responseText = await response.text();
-    let body = null;
-    try {
-      body = responseText ? JSON.parse(responseText) : null;
-    } catch (_error) {
-      body = null;
-    }
-
-    if (!response.ok) {
-      throw new Error(providerHttpError(response.status, body, responseText));
-    }
-
-    return body;
-  } catch (error) {
-    if (controller.signal.aborted || error && error.name === "AbortError") throw new Error(timeoutMessage);
-    if (isNetworkFailure(error)) throw new Error(networkFailureMessage(error, requestData.url));
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function requireApiKey(modelConfig, apiKey) {
-  if (API_KEY_REQUIRED_PROVIDERS.has(modelConfig.provider) && !String(apiKey || "").trim()) {
-    throw new Error("请先填写并保存 API Key。");
-  }
-}
-
-function providerHttpError(status, body, responseText = "") {
-  const error = body && body.error;
-  const detail = [
-    error && typeof error === "object" ? error.code : "",
-    error && typeof error === "object" ? error.type : "",
-    error && typeof error === "object" ? error.message : error,
-    body && body.message,
-    responseText
-  ].filter(Boolean).join(" ").toLowerCase();
-  const insufficient = /insufficient|quota|balance|billing|credit|余额|额度/.test(detail);
-
-  if (status === 401) return "API Key 无效或已过期，请重新填写。";
-  if (status === 402 || ((status === 403 || status === 429) && insufficient)) {
-    return "账户额度或余额不足，请充值后重试。";
-  }
-  if (status === 403) return "API Key 没有访问该模型的权限。";
-  if (status === 404) return "找不到模型或接口，请检查模型地址和模型 ID。";
-  if (status === 408) return "模型请求超时，请重试。";
-  if (status === 413) return "文本过长，模型服务拒绝了请求。";
-  if (status === 429) return "请求过于频繁，请稍后重试。";
-  if (status === 400 || status === 422) return "请求参数有误，请检查模型地址和模型 ID。";
-  if (status >= 500) return "模型服务暂时不可用，请稍后重试。";
-  return `模型请求失败（HTTP ${Number(status) || "未知"}）。`;
-}
-
-function buildModelListRequest(modelConfig, apiKey) {
-  if (modelConfig.provider === "google") {
-    return {
-      url: buildGeminiModelsUrl(apiKey),
-      headers: {}
-    };
-  }
-
-  if (modelConfig.protocol === "anthropic") {
-    const headers = {
-      "anthropic-version": "2023-06-01"
-    };
-    if (apiKey) headers["x-api-key"] = apiKey;
-
-    return {
-      url: buildOpenAIModelsUrl(modelConfig.baseUrl),
-      headers
-    };
-  }
-
-  const headers = {};
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-
-  return {
-    url: buildOpenAIModelsUrl(modelConfig.baseUrl),
-    headers
-  };
-}
-
-function buildProviderRequest(modelConfig, messages, apiKey) {
-  if (modelConfig.protocol === "anthropic") {
-    const systemMessage = messages.find(message => message.role === "system");
-    const userMessages = messages
-      .filter(message => message.role !== "system")
-      .map(message => ({
-        role: message.role === "assistant" ? "assistant" : "user",
-        content: message.content
-      }));
-    const headers = {
-      "content-type": "application/json",
-      "anthropic-version": "2023-06-01"
-    };
-    if (apiKey) headers["x-api-key"] = apiKey;
-
-    return {
-      protocol: "anthropic",
-      url: buildAnthropicMessagesUrl(modelConfig.baseUrl),
-      headers,
-      body: {
-        model: modelConfig.modelId,
-        max_tokens: anthropicMaxTokens(userMessages),
-        temperature: 0.2,
-        system: systemMessage ? systemMessage.content : "",
-        messages: userMessages
+async function providerOnlyTest(request, models = false) {
+  if (runtimeElectron)
+    return models ? listModels(request) : testConnection(request);
+  const settings = normalizeSettings(request.settings);
+  settings.enabled = true;
+  const provider = createProvider();
+  return models
+    ? {
+        ok: true,
+        models: await provider.models({
+          settings,
+          apiKey: request.apiKey || "",
+        }),
       }
-    };
-  }
-
-  const headers = { "content-type": "application/json" };
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-
-  return {
-    protocol: "openai",
-    url: buildChatCompletionsUrl(modelConfig.baseUrl),
-    headers,
-    body: {
-      model: modelConfig.modelId,
-      temperature: 0.2,
-      messages
-    }
-  };
+    : {
+        ok: true,
+        text: await provider.translate({
+          settings,
+          apiKey: request.apiKey || "",
+          direction: "read",
+          text: "Hello, this is a connection test.",
+        }),
+      };
 }
-
-function anthropicMaxTokens(userMessages) {
-  // Anthropic requires an explicit max_tokens; a fixed 2048 truncates long
-  // translations. Scale with the input size (CJK output can be ~1 token/char)
-  // and keep it within a range every supported Claude model can return.
-  const chars = userMessages.reduce((total, message) => total + String(message.content || "").length, 0);
-  const estimate = Math.ceil(chars * 1.5) + 256;
-  return Math.min(8192, Math.max(1024, estimate));
-}
-
-/* @dtm-test-only:start — stripped from the shipped payload by the build/install copy */
-function setElectronForTests(electron) {
-  runtimeElectron = electron;
-}
-/* @dtm-test-only:end */
-
-module.exports = {
-  CHANNELS,
+Object.assign(module.exports, {
   checkForUpdate,
   compareVersions,
+  getSettings,
+  getSystemLocale,
+  saveConfig,
+  getRuntime,
   getApiKeyStatus,
-  install,
-  listModels,
-  loadTranslationCache,
-  saveTranslationCache,
   openSettingsFile,
   openExternal,
   patchBrowserWindowOptions,
-  /* @dtm-test-only:start */
-  providerHttpError,
-  /* @dtm-test-only:end */
   setApiKey,
-  /* @dtm-test-only:start */
   setElectronForTests,
-  /* @dtm-test-only:end */
   testConnection,
-  translateWithSettings
-};
+  listModels,
+  translateWithSettings,
+  registerIpcHandlers,
+  guard,
+  testConnection: (request) => providerOnlyTest(request),
+  listModels: (request) => providerOnlyTest(request, true),
+});
+/* @dtm-test-only:end */

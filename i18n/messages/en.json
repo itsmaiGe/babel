@@ -1,0 +1,1366 @@
+{
+  "common.unavailable": {
+    "message": "Unavailable",
+    "description": "common.unavailable: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.section.general": {
+    "message": "General",
+    "description": "plugin.section.general: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.section.model": {
+    "message": "Model",
+    "description": "plugin.section.model: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.section.read": {
+    "message": "Translation",
+    "description": "plugin.section.read: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.section.style": {
+    "message": "Appearance",
+    "description": "plugin.section.style: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.save": {
+    "message": "Save",
+    "description": "plugin.save: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.discard": {
+    "message": "Discard changes",
+    "description": "plugin.discard: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.overwrite": {
+    "message": "Overwrite and save",
+    "description": "plugin.overwrite: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.reload": {
+    "message": "Reload",
+    "description": "plugin.reload: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.openConfig": {
+    "message": "Open configuration folder",
+    "description": "plugin.openConfig: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.clearCache": {
+    "message": "Clear translation cache",
+    "description": "plugin.clearCache: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.refreshModels": {
+    "message": "Refresh models",
+    "description": "plugin.refreshModels: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.testConnection": {
+    "message": "Test connection",
+    "description": "plugin.testConnection: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.saving": {
+    "message": "Saving…",
+    "description": "plugin.saving: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.conflict": {
+    "message": "Configuration changed. Reload it or explicitly overwrite it.",
+    "description": "plugin.conflict: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.dirty": {
+    "message": "Unsaved changes",
+    "description": "plugin.dirty: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.savedToast": {
+    "message": "Settings saved.",
+    "description": "plugin.savedToast: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.removePending": {
+    "message": "This endpoint’s key will be deleted when you save.",
+    "description": "plugin.key.removePending: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.linkPending": {
+    "message": "The legacy key will be linked to this endpoint when you save.",
+    "description": "plugin.key.linkPending: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.legacyRemovePending": {
+    "message": "The unlinked legacy key will be deleted when you save.",
+    "description": "plugin.key.legacyRemovePending: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.testOnly": {
+    "message": "System encryption is unavailable. The entered key can still be used for connection tests.",
+    "description": "plugin.key.testOnly: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.replacePending": {
+    "message": "The new key will replace the saved key when you save.",
+    "description": "plugin.key.replacePending: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.unlinked": {
+    "message": "A legacy key has not been linked to an endpoint.",
+    "description": "plugin.key.unlinked: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.damaged": {
+    "message": "Saved keys could not be read. Settings stay available. Reset saved keys only after you understand that the current file will be renamed aside.",
+    "description": "plugin.key.damaged: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.reset": {
+    "message": "Reset saved keys",
+    "description": "plugin.key.reset: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.resetExplain": {
+    "message": "Saving will rename the unreadable key file aside and continue without those keys. This does not run until you save.",
+    "description": "plugin.key.resetExplain: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.accessDenied": {
+    "message": "Saved keys cannot be read. Restore access to the key file. Reset is not available.",
+    "description": "plugin.key.accessDenied: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.remove": {
+    "message": "Delete endpoint key",
+    "description": "plugin.key.remove: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.link": {
+    "message": "Link legacy key",
+    "description": "plugin.key.link: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.removeLegacy": {
+    "message": "Delete legacy key",
+    "description": "plugin.key.removeLegacy: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.paste": {
+    "message": "Paste API Key",
+    "description": "plugin.key.paste: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.savedPlaceholder": {
+    "message": "Saved {preview}",
+    "description": "plugin.key.savedPlaceholder: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.replacePlaceholder": {
+    "message": "Saved (paste to replace)",
+    "description": "plugin.key.replacePlaceholder: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.key.savedAria": {
+    "message": "API Key saved",
+    "description": "plugin.key.savedAria: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.provider": {
+    "message": "Provider",
+    "description": "plugin.provider: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.provider.custom": {
+    "message": "Custom",
+    "description": "plugin.provider.custom: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.provider.local": {
+    "message": "{provider} (local)",
+    "description": "plugin.provider.local: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.protocol": {
+    "message": "API format",
+    "description": "plugin.protocol: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.protocol.openai": {
+    "message": "Chat Completions",
+    "description": "plugin.protocol.openai: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.protocol.responses": {
+    "message": "Responses",
+    "description": "plugin.protocol.responses: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.protocol.anthropic": {
+    "message": "Messages",
+    "description": "plugin.protocol.anthropic: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.model": {
+    "message": "Model",
+    "description": "plugin.model: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.modelPlaceholder": {
+    "message": "Select a model or enter a model ID",
+    "description": "plugin.modelPlaceholder: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.modelAlias": {
+    "message": "OpenAI latest alias",
+    "description": "plugin.modelAlias: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.endpoint": {
+    "message": "API endpoint",
+    "description": "plugin.endpoint: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.allowHttp": {
+    "message": "Allow unencrypted HTTP for this endpoint",
+    "description": "plugin.allowHttp: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.modelsRefreshed": {
+    "message": "Refreshed {count} models",
+    "description": "plugin.modelsRefreshed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.connectionSuccess": {
+    "message": "Connected: {origin}",
+    "description": "plugin.connectionSuccess: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.customPrompt": {
+    "message": "Custom prompt",
+    "description": "plugin.customPrompt: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.enabled": {
+    "message": "Enable Babel",
+    "description": "plugin.enabled: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.autoTranslate": {
+    "message": "Auto-translate new messages",
+    "description": "plugin.autoTranslate: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.readTarget": {
+    "message": "Reading language",
+    "description": "plugin.readTarget: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.translationStyle": {
+    "message": "Translation style",
+    "description": "plugin.translationStyle: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.sendEnabled": {
+    "message": "Translation input box",
+    "description": "plugin.sendEnabled: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.sendTarget": {
+    "message": "Sending language",
+    "description": "plugin.sendTarget: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.opacity": {
+    "message": "Translation box opacity",
+    "description": "plugin.opacity: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.percent": {
+    "message": "{value}%",
+    "description": "plugin.percent: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.autoSend": {
+    "message": "Send on Enter",
+    "description": "plugin.autoSend: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.position": {
+    "message": "Translation position",
+    "description": "plugin.position: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis": {
+    "message": "Translation emphasis",
+    "description": "plugin.emphasis: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.background": {
+    "message": "Show translation background",
+    "description": "plugin.background: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.backgroundColor": {
+    "message": "Background color",
+    "description": "plugin.backgroundColor: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.textColor": {
+    "message": "Translation color",
+    "description": "plugin.textColor: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.font": {
+    "message": "Translation font",
+    "description": "plugin.font: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.position.below": {
+    "message": "Below original",
+    "description": "plugin.position.below: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.position.above": {
+    "message": "Above original",
+    "description": "plugin.position.above: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.font.discord": {
+    "message": "Discord default",
+    "description": "plugin.font.discord: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.font.inherit": {
+    "message": "Match message",
+    "description": "plugin.font.inherit: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.font.system": {
+    "message": "System sans serif",
+    "description": "plugin.font.system: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.font.mono": {
+    "message": "Monospace",
+    "description": "plugin.font.mono: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.font.serif": {
+    "message": "Serif",
+    "description": "plugin.font.serif: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.none": {
+    "message": "None",
+    "description": "plugin.emphasis.none: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.bold": {
+    "message": "Bold",
+    "description": "plugin.emphasis.bold: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.light": {
+    "message": "Light",
+    "description": "plugin.emphasis.light: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.marker": {
+    "message": "Marker",
+    "description": "plugin.emphasis.marker: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.underline": {
+    "message": "Underline",
+    "description": "plugin.emphasis.underline: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.wavy": {
+    "message": "Wavy underline",
+    "description": "plugin.emphasis.wavy: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.emphasis.strike": {
+    "message": "Strikethrough",
+    "description": "plugin.emphasis.strike: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.auto": {
+    "message": "Auto",
+    "description": "plugin.color.auto: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.custom": {
+    "message": "Custom color",
+    "description": "plugin.color.custom: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.graphite": {
+    "message": "Graphite",
+    "description": "plugin.color.graphite: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.slate": {
+    "message": "Slate",
+    "description": "plugin.color.slate: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.blueGray": {
+    "message": "Blue gray",
+    "description": "plugin.color.blueGray: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.midnight": {
+    "message": "Midnight blue",
+    "description": "plugin.color.midnight: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.darkTeal": {
+    "message": "Dark teal",
+    "description": "plugin.color.darkTeal: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.darkGreen": {
+    "message": "Dark green",
+    "description": "plugin.color.darkGreen: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.olive": {
+    "message": "Olive",
+    "description": "plugin.color.olive: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.wine": {
+    "message": "Wine",
+    "description": "plugin.color.wine: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.indigo": {
+    "message": "Indigo",
+    "description": "plugin.color.indigo: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.plum": {
+    "message": "Plum",
+    "description": "plugin.color.plum: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.iceBlue": {
+    "message": "Ice blue",
+    "description": "plugin.color.iceBlue: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.mint": {
+    "message": "Mint",
+    "description": "plugin.color.mint: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.cream": {
+    "message": "Cream",
+    "description": "plugin.color.cream: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.blush": {
+    "message": "Blush",
+    "description": "plugin.color.blush: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lavender": {
+    "message": "Lavender",
+    "description": "plugin.color.lavender: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.offWhite": {
+    "message": "Off-white",
+    "description": "plugin.color.offWhite: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lightGray": {
+    "message": "Light gray",
+    "description": "plugin.color.lightGray: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.silver": {
+    "message": "Silver",
+    "description": "plugin.color.silver: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lightBlue": {
+    "message": "Light blue",
+    "description": "plugin.color.lightBlue: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.aqua": {
+    "message": "Aqua",
+    "description": "plugin.color.aqua: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lightGreen": {
+    "message": "Light green",
+    "description": "plugin.color.lightGreen: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lightYellow": {
+    "message": "Light yellow",
+    "description": "plugin.color.lightYellow: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lightPink": {
+    "message": "Light pink",
+    "description": "plugin.color.lightPink: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.lilac": {
+    "message": "Lilac",
+    "description": "plugin.color.lilac: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.ink": {
+    "message": "Ink",
+    "description": "plugin.color.ink: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.charcoal": {
+    "message": "Charcoal",
+    "description": "plugin.color.charcoal: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.navy": {
+    "message": "Navy",
+    "description": "plugin.color.navy: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.teal": {
+    "message": "Teal",
+    "description": "plugin.color.teal: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.forest": {
+    "message": "Forest green",
+    "description": "plugin.color.forest: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.rust": {
+    "message": "Rust",
+    "description": "plugin.color.rust: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.color.maroon": {
+    "message": "Maroon",
+    "description": "plugin.color.maroon: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.style.natural": {
+    "message": "Natural",
+    "description": "plugin.style.natural: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.style.literal": {
+    "message": "Literal",
+    "description": "plugin.style.literal: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.style.casual": {
+    "message": "Casual",
+    "description": "plugin.style.casual: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.style.formal": {
+    "message": "Formal",
+    "description": "plugin.style.formal: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.style.custom": {
+    "message": "Custom",
+    "description": "plugin.style.custom: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.zhHans": {
+    "message": "Simplified Chinese",
+    "description": "plugin.lang.zhHans: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.zhHant": {
+    "message": "Traditional Chinese",
+    "description": "plugin.lang.zhHant: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.en": {
+    "message": "English",
+    "description": "plugin.lang.en: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.ja": {
+    "message": "Japanese",
+    "description": "plugin.lang.ja: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.ko": {
+    "message": "Korean",
+    "description": "plugin.lang.ko: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.fr": {
+    "message": "French",
+    "description": "plugin.lang.fr: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.de": {
+    "message": "German",
+    "description": "plugin.lang.de: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.es": {
+    "message": "Spanish",
+    "description": "plugin.lang.es: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.lang.ru": {
+    "message": "Russian",
+    "description": "plugin.lang.ru: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.preview": {
+    "message": "Preview",
+    "description": "plugin.preview: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.previewText": {
+    "message": "This is a translation preview. Colors follow your theme.",
+    "description": "plugin.previewText: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.cacheCleared": {
+    "message": "Translation cache cleared",
+    "description": "plugin.cacheCleared: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.about.description": {
+    "message": "Double-click messages in Discord to translate them, or translate your text before sending.",
+    "description": "plugin.about.description: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.about.why": {
+    "message": "Babel takes its name from the Tower of Babel, a story of people divided by language. This plugin helps bridge those language barriers in Discord.",
+    "description": "plugin.about.why: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.about.thanks": {
+    "message": "Thanks to {supporterA} and {supporterB} for supporting Babel.",
+    "description": "plugin.about.thanks: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.update.check": {
+    "message": "Check for updates",
+    "description": "plugin.update.check: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.update.checking": {
+    "message": "Checking…",
+    "description": "plugin.update.checking: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.update.available": {
+    "message": "Get v{version}",
+    "description": "plugin.update.available: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.update.current": {
+    "message": "Up to date",
+    "description": "plugin.update.current: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.update.failed": {
+    "message": "Retry",
+    "description": "plugin.update.failed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.update.openFailed": {
+    "message": "Retry opening",
+    "description": "plugin.update.openFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.loading": {
+    "message": "Translating… (double-click to cancel)",
+    "description": "plugin.loading: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.retry": {
+    "message": "{message} (double-click to retry)",
+    "description": "plugin.retry: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.drag": {
+    "message": "Move translation box (double-click to reset)",
+    "description": "plugin.send.drag: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.input": {
+    "message": "Text to translate and send",
+    "description": "plugin.send.input: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.resize": {
+    "message": "Resize translation box (double-click to reset)",
+    "description": "plugin.send.resize: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.enter": {
+    "message": "Enter to send",
+    "description": "plugin.send.enter: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.insert": {
+    "message": "Enter to fill composer",
+    "description": "plugin.send.insert: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.loading": {
+    "message": "Translating… Esc to cancel",
+    "description": "plugin.send.loading: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.inserted": {
+    "message": "Placed in composer",
+    "description": "plugin.send.inserted: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.send.submitted": {
+    "message": "Submitted for sending",
+    "description": "plugin.send.submitted: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.UNKNOWN": {
+    "message": "Something went wrong. Try again.",
+    "description": "plugin.error.UNKNOWN: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG": {
+    "message": "Check the endpoint and model ID.",
+    "description": "plugin.error.CONFIG: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.INVALID_ENDPOINT": {
+    "message": "The endpoint must not contain credentials, query parameters or fragments.",
+    "description": "plugin.error.CONFIG.INVALID_ENDPOINT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.MODELS_EMPTY": {
+    "message": "No models are available. Check the endpoint and API permissions.",
+    "description": "plugin.error.CONFIG.MODELS_EMPTY: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.NATIVE_UI_UNAVAILABLE": {
+    "message": "Discord controls are unavailable. Reopen settings or restart Discord.",
+    "description": "plugin.error.CONFIG.NATIVE_UI_UNAVAILABLE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.MODEL_UNAVAILABLE": {
+    "message": "This model ID wasn't found for this key or endpoint.",
+    "description": "plugin.error.CONFIG.MODEL_UNAVAILABLE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.PROTOCOL_UNSUPPORTED": {
+    "message": "The service says this model isn't available through the selected API format. Choose another format if the service offers one, or check how the service routes this model.",
+    "description": "plugin.error.CONFIG.PROTOCOL_UNSUPPORTED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.REQUEST_REJECTED": {
+    "message": "The service rejected the request (HTTP {status}); the cause wasn't identified. Check the model ID, API format and endpoint.",
+    "description": "plugin.error.CONFIG.REQUEST_REJECTED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFIG.UNEXPECTED_RESPONSE": {
+    "message": "The service's reply doesn't match the selected API format.",
+    "description": "plugin.error.CONFIG.UNEXPECTED_RESPONSE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.INSECURE_HTTP": {
+    "message": "This endpoint uses unencrypted HTTP. Allow it explicitly before retrying.",
+    "description": "plugin.error.INSECURE_HTTP: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NO_KEY": {
+    "message": "Enter and save an API Key first.",
+    "description": "plugin.error.NO_KEY: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.KEY_UNAVAILABLE": {
+    "message": "System encryption is unavailable; the saved API Key cannot be read.",
+    "description": "plugin.error.KEY_UNAVAILABLE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.SECURE_STORAGE": {
+    "message": "System encryption is unavailable. API Key was not saved. Restart Discord and retry.",
+    "description": "plugin.error.SECURE_STORAGE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.DISABLED": {
+    "message": "Babel is turned off.",
+    "description": "plugin.error.DISABLED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STALE_REVISION": {
+    "message": "Configuration changed. Try again.",
+    "description": "plugin.error.STALE_REVISION: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CANCELED": {
+    "message": "Translation canceled.",
+    "description": "plugin.error.CANCELED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CANCELED.SEND": {
+    "message": "Canceled. Your original text was kept.",
+    "description": "plugin.error.CANCELED.SEND: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.BUSY": {
+    "message": "The translation queue is full. Try again shortly.",
+    "description": "plugin.error.BUSY: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.BUSY_SKIPPED": {
+    "message": "The queue is full; this automatic translation was skipped.",
+    "description": "plugin.error.BUSY_SKIPPED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.PAUSED": {
+    "message": "Automatic translation is paused. Check your settings or retry later.",
+    "description": "plugin.error.PAUSED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.AUTH": {
+    "message": "API Key is invalid or expired. Enter a new key.",
+    "description": "plugin.error.AUTH: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.AUTH.PERMISSION": {
+    "message": "The API key does not have permission for this model.",
+    "description": "plugin.error.AUTH.PERMISSION: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.RATE_LIMIT": {
+    "message": "Too many requests. Try again later.",
+    "description": "plugin.error.RATE_LIMIT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.RATE_LIMIT.QUOTA": {
+    "message": "The provider account is out of quota. Automatic translation stays paused until a manual translation succeeds or you change the configuration.",
+    "description": "plugin.error.RATE_LIMIT.QUOTA: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.RATE_LIMIT.TEMPORARY": {
+    "message": "The provider is temporarily rate-limiting requests. Try again later.",
+    "description": "plugin.error.RATE_LIMIT.TEMPORARY: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.RESPONSE_TOO_LARGE": {
+    "message": "The model response was too large; reading stopped.",
+    "description": "plugin.error.RESPONSE_TOO_LARGE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.REDIRECT_BLOCKED": {
+    "message": "Endpoint redirect blocked. Use the final HTTPS address.",
+    "description": "plugin.error.REDIRECT_BLOCKED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.TIMEOUT": {
+    "message": "Translation timed out and was canceled. Try again.",
+    "description": "plugin.error.TIMEOUT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NETWORK": {
+    "message": "Connection failed. Check your network or proxy and retry.",
+    "description": "plugin.error.NETWORK: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NETWORK.EMPTY_RESPONSE": {
+    "message": "The model returned no translation. Try again.",
+    "description": "plugin.error.NETWORK.EMPTY_RESPONSE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NETWORK.PROVIDER_TEMPORARY": {
+    "message": "The provider is temporarily unavailable. Try again later.",
+    "description": "plugin.error.NETWORK.PROVIDER_TEMPORARY: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NETWORK.INCOMPLETE": {
+    "message": "The model didn't finish this translation, so nothing was shown.",
+    "description": "plugin.error.NETWORK.INCOMPLETE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NETWORK.REFUSED": {
+    "message": "The model declined to translate this text.",
+    "description": "plugin.error.NETWORK.REFUSED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.NETWORK.RESPONSE_FAILED": {
+    "message": "The service couldn't complete this translation.",
+    "description": "plugin.error.NETWORK.RESPONSE_FAILED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.INPUT": {
+    "message": "The request is invalid or too long (maximum 12,000 characters).",
+    "description": "plugin.error.INPUT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.INPUT.EMPTY_TEXT": {
+    "message": "There is no text to translate.",
+    "description": "plugin.error.INPUT.EMPTY_TEXT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.INPUT.TEXT_LIMIT": {
+    "message": "Text exceeds the {limit}-character limit.",
+    "description": "plugin.error.INPUT.TEXT_LIMIT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.INPUT.EXTERNAL_HTTPS": {
+    "message": "Only HTTPS links can be opened.",
+    "description": "plugin.error.INPUT.EXTERNAL_HTTPS: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.INPUT.PROVIDER_LIMIT": {
+    "message": "The provider rejected the request as too large.",
+    "description": "plugin.error.INPUT.PROVIDER_LIMIT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.CONFLICT": {
+    "message": "The configuration file changed. Reload before saving.",
+    "description": "plugin.error.CONFLICT: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STORAGE": {
+    "message": "Could not save configuration. Check folder permissions.",
+    "description": "plugin.error.STORAGE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STORAGE.KEY_MIGRATION": {
+    "message": "Key migration failed. The original files were kept.",
+    "description": "plugin.error.STORAGE.KEY_MIGRATION: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STORAGE.READ_FAILED": {
+    "message": "Could not read configuration. Check folder permissions.",
+    "description": "plugin.error.STORAGE.READ_FAILED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STORAGE.WRITE_FAILED": {
+    "message": "Could not write configuration. The original files were kept.",
+    "description": "plugin.error.STORAGE.WRITE_FAILED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STORAGE.OPEN_FOLDER": {
+    "message": "Could not open the configuration folder.",
+    "description": "plugin.error.STORAGE.OPEN_FOLDER: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.STORAGE.ACCESS_DENIED": {
+    "message": "Saved keys cannot be read. Restore file access and try again.",
+    "description": "plugin.error.STORAGE.ACCESS_DENIED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.PARTIAL_SAVE": {
+    "message": "Save was incomplete. Restoration of the original configuration was attempted.",
+    "description": "plugin.error.PARTIAL_SAVE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.PARTIAL_SAVE.KEY_RESTORED": {
+    "message": "Settings were not saved. The previous key was restored.",
+    "description": "plugin.error.PARTIAL_SAVE.KEY_RESTORED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.PARTIAL_SAVE.KEY_ROLLBACK_FAILED": {
+    "message": "Settings were not saved, and key restoration failed. Reload before retrying.",
+    "description": "plugin.error.PARTIAL_SAVE.KEY_ROLLBACK_FAILED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.MALFORMED": {
+    "message": "Configuration could not be read safely. The original file was kept.",
+    "description": "plugin.error.MALFORMED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.MALFORMED.UNREADABLE": {
+    "message": "Configuration cannot be read. Check its permissions and reload.",
+    "description": "plugin.error.MALFORMED.UNREADABLE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.MALFORMED.INVALID_JSON": {
+    "message": "The configuration file is invalid. Repair it or explicitly overwrite it; the original file was kept.",
+    "description": "plugin.error.MALFORMED.INVALID_JSON: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.MALFORMED.OVERSIZED": {
+    "message": "The saved key file is too large to read safely.",
+    "description": "plugin.error.MALFORMED.OVERSIZED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.UNTRUSTED": {
+    "message": "This window cannot use Babel.",
+    "description": "plugin.error.UNTRUSTED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.COMPOSER_UNAVAILABLE": {
+    "message": "Discord’s composer is unavailable. Your original text was kept.",
+    "description": "plugin.error.COMPOSER_UNAVAILABLE: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.COMPOSER_DRAFT_NOT_EMPTY": {
+    "message": "Discord’s composer contains a draft. Clear it before retrying.",
+    "description": "plugin.error.COMPOSER_DRAFT_NOT_EMPTY: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.COMPOSER_CHANGED": {
+    "message": "The channel or composer changed. Your original text was kept; translate again.",
+    "description": "plugin.error.COMPOSER_CHANGED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.error.COMPOSER_UNSUPPORTED": {
+    "message": "This composer state is not supported. Exit editing or other special modes and retry.",
+    "description": "plugin.error.COMPOSER_UNSUPPORTED: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.target": {
+    "message": "Target: {path}",
+    "description": "common.target: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.data": {
+    "message": "Data: {path}",
+    "description": "common.data: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.ready": {
+    "message": "Ready to install",
+    "description": "common.ready: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detecting": {
+    "message": "Looking for Discord…",
+    "description": "common.detecting: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.installing": {
+    "message": "Installing…",
+    "description": "common.installing: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.uninstalling": {
+    "message": "Uninstalling…",
+    "description": "common.uninstalling: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.installed": {
+    "message": "Babel is installed",
+    "description": "common.installed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.uninstalled": {
+    "message": "Babel is uninstalled",
+    "description": "common.uninstalled: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.incomplete": {
+    "message": "Action incomplete. Review the details and retry.",
+    "description": "common.incomplete: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.savedData": {
+    "message": "Saved data kept at {path}",
+    "description": "common.savedData: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.profile.known": {
+    "message": "Uninstall only. Data belongs to this Discord target.",
+    "description": "common.profile.known: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.profile.absent": {
+    "message": "No saved data found.",
+    "description": "common.profile.absent: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.profile.unknown": {
+    "message": "Data target cannot be identified; saved data will be kept.",
+    "description": "common.profile.unknown: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.systemMessage": {
+    "message": "System message: {message}",
+    "description": "common.systemMessage: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.step.detach": {
+    "message": "Detach Babel loader",
+    "description": "common.step.detach: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.step.backup": {
+    "message": "Remove recovery backup",
+    "description": "common.step.backup: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.step.payload": {
+    "message": "Remove plugin files",
+    "description": "common.step.payload: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.step.profile": {
+    "message": "Saved profile data",
+    "description": "common.step.profile: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.state.done": {
+    "message": "Done",
+    "description": "common.state.done: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.state.absent": {
+    "message": "Already absent",
+    "description": "common.state.absent: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.state.failed": {
+    "message": "Failed",
+    "description": "common.state.failed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.state.skipped": {
+    "message": "Not attempted",
+    "description": "common.state.skipped: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.state.kept": {
+    "message": "Kept",
+    "description": "common.state.kept: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.backupRetained": {
+    "message": "Restore failed; recovery material was kept.",
+    "description": "common.detail.backupRetained: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.payloadRetained": {
+    "message": "Restore failed; plugin files were kept.",
+    "description": "common.detail.payloadRetained: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.incomplete": {
+    "message": "Uninstall was incomplete; saved data was kept.",
+    "description": "common.detail.incomplete: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.kept": {
+    "message": "Saved settings, API keys and translation cache were kept.",
+    "description": "common.detail.kept: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.identityChanged": {
+    "message": "Store identity changed; data was kept.",
+    "description": "common.detail.identityChanged: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.targetMissing": {
+    "message": "No usable Discord target was found.",
+    "description": "common.error.targetMissing: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.coreMissing": {
+    "message": "No Discord desktop core was found at the selected target.",
+    "description": "common.error.coreMissing: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.pathRead": {
+    "message": "Cannot read the Discord path: {path}",
+    "description": "common.error.pathRead: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.unrecognized": {
+    "message": "Refusing to modify an unrecognized Discord core: {path}",
+    "description": "common.error.unrecognized: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.manifest": {
+    "message": "The installer payload manifest is missing or invalid.",
+    "description": "common.error.manifest: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.payloadUnsafe": {
+    "message": "The installer contains an unsafe payload path or link.",
+    "description": "common.error.payloadUnsafe: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.payloadIntegrity": {
+    "message": "The installer payload failed integrity checks.",
+    "description": "common.error.payloadIntegrity: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.payloadIncomplete": {
+    "message": "The installer payload is incomplete or has unresolved imports.",
+    "description": "common.error.payloadIncomplete: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.version": {
+    "message": "The embedded payload version does not match the installer.",
+    "description": "common.error.version: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.profileUnknown": {
+    "message": "The profile identity could not be confirmed; saved data was kept.",
+    "description": "common.error.profileUnknown: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.profileUnsafe": {
+    "message": "Refusing to erase an unmatched or linked profile store.",
+    "description": "common.error.profileUnsafe: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.identityChanged": {
+    "message": "Store identity changed before erasure; data was kept.",
+    "description": "common.error.identityChanged: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.operation": {
+    "message": "The file operation could not be completed.",
+    "description": "common.error.operation: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.coreIncomplete": {
+    "message": "Discord is still updating this installation. Try again when it finishes.",
+    "description": "common.error.coreIncomplete: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.targetChanged": {
+    "message": "Discord changed this installation during the operation. Try again.",
+    "description": "common.error.targetChanged: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.error.targetLocked": {
+    "message": "Another installation is changing this Discord copy. Try again when it finishes.",
+    "description": "common.error.targetLocked: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.payloadKept": {
+    "message": "Plugin files were kept.",
+    "description": "common.detail.payloadKept: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.previousFileKept": {
+    "message": "A previous installer file was kept.",
+    "description": "common.detail.previousFileKept: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.discordRunning": {
+    "message": "Discord is open, so plugin files and saved data were kept.",
+    "description": "common.detail.discordRunning: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.identityUnresolved": {
+    "message": "Discord identity is unknown, so plugin files and saved data were kept.",
+    "description": "common.detail.identityUnresolved: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.title": {
+    "message": "Babel Manager",
+    "description": "mac.title: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.target": {
+    "message": "Discord target",
+    "description": "mac.target: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.cleanup": {
+    "message": "Also remove saved settings, API keys and translation cache",
+    "description": "mac.cleanup: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.install": {
+    "message": "Install / Update",
+    "description": "mac.install: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.uninstall": {
+    "message": "Uninstall",
+    "description": "mac.uninstall: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.close": {
+    "message": "Close",
+    "description": "mac.close: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.file": {
+    "message": "File",
+    "description": "mac.file: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.edit": {
+    "message": "Edit",
+    "description": "mac.edit: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.copy": {
+    "message": "Copy",
+    "description": "mac.copy: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.selectAll": {
+    "message": "Select All",
+    "description": "mac.selectAll: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.quit": {
+    "message": "Quit Babel Manager",
+    "description": "mac.quit: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.chooseFolder": {
+    "message": "Choose Discord folder…",
+    "description": "mac.chooseFolder: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.redetect": {
+    "message": "Check target again",
+    "description": "mac.redetect: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.choose": {
+    "message": "Choose",
+    "description": "mac.choose: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.notFound": {
+    "message": "Open Discord, quit it, click “Check target again”, and use “Choose Discord folder…” for another location.",
+    "description": "mac.notFound: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.privacy": {
+    "message": "Babel Manager needs access to the selected Discord data folder to install or remove the plugin. Saved data is kept unless you explicitly choose to erase it.",
+    "description": "mac.privacy: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.title": {
+    "message": "Babel Installer",
+    "description": "win.title: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.path": {
+    "message": "Discord &path",
+    "description": "win.path: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.redetect": {
+    "message": "&Redetect",
+    "description": "win.redetect: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.cleanup": {
+    "message": "Also remove settings, API &keys and translation cache",
+    "description": "win.cleanup: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.details": {
+    "message": "&Details",
+    "description": "win.details: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.install": {
+    "message": "&Install",
+    "description": "win.install: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.uninstall": {
+    "message": "&Uninstall",
+    "description": "win.uninstall: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.close": {
+    "message": "&Close",
+    "description": "win.close: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.permission": {
+    "message": "Check that this is the Discord folder the current Windows user uses, then detect again.",
+    "description": "win.permission: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.notFound": {
+    "message": "Check the path, open Discord and quit it, then click Redetect.",
+    "description": "win.notFound: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "plugin.style.liberal": {
+    "message": "Idiomatic",
+    "description": "plugin.style.liberal: UI style or cache recovery text."
+  },
+  "plugin.style.concise": {
+    "message": "Concise",
+    "description": "plugin.style.concise: UI style or cache recovery text."
+  },
+  "plugin.style.game": {
+    "message": "Gaming chat",
+    "description": "plugin.style.game: UI style or cache recovery text."
+  },
+  "plugin.error.STORAGE.CACHE_READ": {
+    "message": "Could not read cache; using an empty cache.",
+    "description": "plugin.error.STORAGE.CACHE_READ: UI style or cache recovery text."
+  },
+  "plugin.error.STORAGE.CACHE_WRITE": {
+    "message": "Could not save cache. Check folder permissions.",
+    "description": "plugin.error.STORAGE.CACHE_WRITE: UI style or cache recovery text."
+  },
+  "plugin.error.STORAGE.CACHE_CLEAR": {
+    "message": "Could not clear cache. Check folder permissions.",
+    "description": "plugin.error.STORAGE.CACHE_CLEAR: UI style or cache recovery text."
+  },
+  "mac.details": {
+    "message": "Details",
+    "description": "Native macOS details text."
+  },
+  "mac.uninstallTitle": {
+    "message": "Uninstall Babel?",
+    "description": "Native macOS uninstallTitle text."
+  },
+  "mac.uninstallMessage": {
+    "message": "Babel will be removed from Discord. Saved settings, API keys, and translation cache are kept unless you select the option below.",
+    "description": "Native macOS uninstallMessage text."
+  },
+  "mac.cancel": {
+    "message": "Cancel",
+    "description": "Native macOS cancel text."
+  },
+  "mac.permissionSummary": {
+    "message": "This folder is not accessible",
+    "description": "mac.permissionSummary: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.readyNext": {
+    "message": "Install or update keeps saved settings.",
+    "description": "common.readyNext: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.installFailed": {
+    "message": "Could not finish installing",
+    "description": "common.installFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.uninstallFailed": {
+    "message": "Could not finish uninstalling",
+    "description": "common.uninstallFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.seeDetails": {
+    "message": "See the details for the cause.",
+    "description": "common.seeDetails: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.cleanupLeftover": {
+    "message": "Some old files could not be removed. See the details for the cause.",
+    "description": "common.cleanupLeftover: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.restartSteps": {
+    "message": "Choose Quit Discord from the Discord menu, then open it again.",
+    "description": "mac.restartSteps: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.chooseNamed": {
+    "message": "Select the folder named “{name}”, then click Choose.",
+    "description": "mac.chooseNamed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.permissionNext": {
+    "message": "Click “Choose Discord folder…”.",
+    "description": "mac.permissionNext: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.permissionStill": {
+    "message": "macOS still does not allow access to this folder. See the details for the system message.",
+    "description": "mac.permissionStill: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.quitSteps": {
+    "message": "Right-click the Discord icon near the clock, choose Quit Discord, then try again.",
+    "description": "win.quitSteps: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.restartSteps": {
+    "message": "Right-click the Discord icon near the clock, choose Quit Discord, then open it again.",
+    "description": "win.restartSteps: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.elevatedNext": {
+    "message": "This manager is running as administrator, so the button stays Close. Open Discord yourself the usual way, without administrator rights.",
+    "description": "win.elevatedNext: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.openNext": {
+    "message": "Click Open Discord to finish.",
+    "description": "win.openNext: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.installing": {
+    "message": "Installing… Discord will be closed first.",
+    "description": "win.installing: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.opening": {
+    "message": "Opening Discord…",
+    "description": "win.opening: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.otherProgram": {
+    "message": "{name} is running from the Discord folder. Close it, then try again.",
+    "description": "win.detail.otherProgram: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.reopened": {
+    "message": "Discord was opened again while installing. Close it, then try again.",
+    "description": "win.detail.reopened: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.alreadyOpen": {
+    "message": "Discord is already open.",
+    "description": "win.detail.alreadyOpen: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.stoppedForInstall": {
+    "message": "Discord was closed for the install and can be opened again from the Start menu.",
+    "description": "win.detail.stoppedForInstall: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.notFoundTitle": {
+    "message": "Discord was not found",
+    "description": "win.notFoundTitle: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.permissionTitle": {
+    "message": "This folder is not accessible",
+    "description": "win.permissionTitle: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.restart": {
+    "message": "Restart Discord",
+    "description": "mac.restart: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "mac.openManually": {
+    "message": "Open Discord from Applications.",
+    "description": "mac.openManually: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.restart": {
+    "message": "&Open Discord",
+    "description": "win.restart: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.openManually": {
+    "message": "Open Discord from the Start menu.",
+    "description": "win.openManually: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.restarting": {
+    "message": "Restarting Discord…",
+    "description": "common.restarting: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.restartNext": {
+    "message": "Click Restart Discord to finish.",
+    "description": "common.restartNext: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.restartFailed": {
+    "message": "Couldn't restart Discord",
+    "description": "common.restartFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.notQuit": {
+    "message": "Discord didn't quit.",
+    "description": "common.detail.notQuit: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.unverified": {
+    "message": "Discord's application could not be verified.",
+    "description": "common.detail.unverified: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.launchFailed": {
+    "message": "Discord could not be started.",
+    "description": "common.detail.launchFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "common.detail.updaterRunning": {
+    "message": "Discord's updater is running. Wait for it to finish, then try again.",
+    "description": "common.detail.updaterRunning: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.quitFailed": {
+    "message": "Couldn't quit Discord",
+    "description": "win.quitFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.openFailed": {
+    "message": "Couldn't open Discord",
+    "description": "win.openFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.systemMessageCode": {
+    "message": "System message: {message} (code {code})",
+    "description": "win.systemMessageCode: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.stage": {
+    "message": "Stage: {stage}",
+    "description": "win.detail.stage: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.process": {
+    "message": "Process: {name} (PID {pid})",
+    "description": "win.detail.process: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.image": {
+    "message": "Verified process path: {path}",
+    "description": "win.detail.image: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.handle": {
+    "message": "Held handle check: {state} (wait result {code})",
+    "description": "win.detail.handle: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.detail.handleFailed": {
+    "message": "Held handle check: {state}",
+    "description": "win.detail.handleFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.state.signaled": {
+    "message": "signaled (the process has exited)",
+    "description": "win.state.signaled: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.state.unsignaled": {
+    "message": "unsignaled (the process had not exited)",
+    "description": "win.state.unsignaled: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.state.uncheckable": {
+    "message": "could not be checked",
+    "description": "win.state.uncheckable: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.queryFailed": {
+    "message": "the process query failed",
+    "description": "win.stage.queryFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.otherProcess": {
+    "message": "another program was found inside the Discord folder",
+    "description": "win.stage.otherProcess: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.closeFailed": {
+    "message": "the close request failed",
+    "description": "win.stage.closeFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.terminateFailed": {
+    "message": "ending Discord's process failed",
+    "description": "win.stage.terminateFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.waitFailed": {
+    "message": "waiting for Discord to quit failed",
+    "description": "win.stage.waitFailed: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.waitTimeout": {
+    "message": "the wait for Discord to exit timed out",
+    "description": "win.stage.waitTimeout: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.rescanFound": {
+    "message": "the final check still found a matching Discord process",
+    "description": "win.stage.rescanFound: app-owned plain-text interface copy; named values are inserted once."
+  },
+  "win.stage.launchFailed": {
+    "message": "starting Discord failed",
+    "description": "win.stage.launchFailed: app-owned plain-text interface copy; named values are inserted once."
+  }
+}

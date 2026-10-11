@@ -1,0 +1,3 @@
+"NSAppDataUsageDescription" = "Babel 管理程式需要存取所選 Discord 資料夾，以安裝或移除外掛。除非你明確選擇刪除，否則會保留已儲存的資料。";
+"CFBundleDisplayName" = "Babel 管理程式";
+"CFBundleName" = "Babel 管理程式";

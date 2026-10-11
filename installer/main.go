@@ -1,138 +1,54 @@
-// Babel installer — a small Go + giu GUI that patches/unpatches Discord, mirroring
-// the Vencord installer approach. The plugin payload is embedded into the exe, so
-// it is a single self-contained file with no Node.js requirement.
-//
-// The UI is Chinese; we load Microsoft YaHei (msyh.ttc, shipped with Windows) so
-// Dear ImGui can render CJK glyphs — its default font cannot.
+// Babel's native Win32 manager embeds the complete verified plugin payload.
 package main
 
 import (
+	"babel-installer/internal/core"
+	"babel-installer/internal/i18n"
+	"babel-installer/internal/ui"
 	"embed"
-	"errors"
-	"image/color"
+	"encoding/json"
 	"io/fs"
 	"os"
-
-	"github.com/AllenDang/cimgui-go/imgui"
-	"github.com/AllenDang/giu"
-
-	"babel-installer/internal/core"
 )
 
 //go:embed all:payload
-var payloadFS embed.FS
-
-var (
-	discordPath = core.DiscordBaseDir()
-	status      = "安装器已自动填写 Discord 路径。通常无需修改，直接点击「安装」即可。"
-	uiScale     float32
-)
-
-func payloadRoot() fs.FS {
-	sub, err := fs.Sub(payloadFS, "payload")
-	if err != nil {
-		return payloadFS
-	}
-	return sub
-}
-
-func runInstall() {
-	msg, err := core.Install(discordPath, payloadRoot())
-	if err != nil {
-		status = friendlyActionError("安装", err)
-	} else {
-		status = "安装成功。接下来只需：\n1. 在系统托盘右键 Discord，选择「退出 Discord」\n2. 重新打开 Discord\n\n" + msg
-	}
-	giu.Update()
-}
-
-func runUninstall() {
-	msg, err := core.Uninstall(discordPath)
-	if err != nil {
-		status = friendlyActionError("卸载", err)
-	} else {
-		status = msg + "\n\n请彻底退出 Discord 后重新打开。"
-	}
-	giu.Update()
-}
-
-func redetectDiscord() {
-	dirs := core.FindDiscordBaseDirs()
-	if len(dirs) == 0 {
-		status = "没有自动检测到 Discord。请粘贴 Discord 文件夹、app-* 文件夹或 Discord.exe 的完整路径。"
-	} else {
-		discordPath = dirs[0]
-		status = "已检测到 Discord：\n" + discordPath
-	}
-	giu.Update()
-}
-
-func friendlyActionError(action string, err error) string {
-	if errors.Is(err, core.ErrDiscordNotFound) || errors.Is(err, core.ErrDiscordCore) {
-		return action + "失败：没有在所填路径中找到可用的 Discord。\n\n请确认 Discord 已安装并至少启动过一次，然后填写 Discord 文件夹、app-* 文件夹或 Discord.exe 的完整路径。"
-	}
-	if errors.Is(err, os.ErrPermission) {
-		return action + "失败：没有文件访问权限。\n\n请先从系统托盘彻底退出 Discord，再重试；仍失败时请右键本安装器并选择「以管理员身份运行」。"
-	}
-	return action + "失败。\n\n请确认 Discord 已彻底退出，并检查上方路径是否正确。\n详细信息：" + err.Error()
-}
-
-// Discord brand blurple, used for the primary (Install) button.
-var (
-	blurple        = color.RGBA{R: 0x58, G: 0x65, B: 0xF2, A: 0xff}
-	blurpleHovered = color.RGBA{R: 0x4a, G: 0x55, B: 0xd0, A: 0xff}
-	blurpleActive  = color.RGBA{R: 0x40, G: 0x49, B: 0xb8, A: 0xff}
-)
-
-func loop() {
-	giu.SingleWindow().Layout(
-		giu.Style().SetFontSize(26).To(giu.Label("Babel")),
-		giu.Label("Discord 翻译插件"),
-		giu.Dummy(0, 12*uiScale),
-		giu.Label("Discord 安装目录"),
-		giu.Custom(func() {
-			width, _ := giu.GetAvailableRegion()
-			giu.Row(
-				giu.InputText(&discordPath).Hint("Discord 文件夹或 Discord.exe").Size(width-120*uiScale),
-				giu.Button("重新检测").OnClick(redetectDiscord).Size(108*uiScale, 0),
-			).Build()
-		}),
-		giu.Label("支持任意磁盘，安装器不会固定查找 C 盘。").Wrapped(true),
-		giu.Dummy(0, 8*uiScale),
-		giu.Custom(func() {
-			width, _ := giu.GetAvailableRegion()
-			buttonWidth := (width - 12*uiScale) / 2
-			giu.Row(
-				giu.Style().
-					SetColor(giu.StyleColorButton, blurple).
-					SetColor(giu.StyleColorButtonHovered, blurpleHovered).
-					SetColor(giu.StyleColorButtonActive, blurpleActive).
-					To(giu.Button("安装").OnClick(runInstall).Size(buttonWidth, 44*uiScale)),
-				giu.Button("卸载").OnClick(runUninstall).Size(buttonWidth, 44*uiScale),
-			).Build()
-		}),
-		giu.Dummy(0, 12*uiScale),
-		giu.Separator(),
-		giu.Dummy(0, 4*uiScale),
-		giu.Label("操作状态"),
-		giu.Child().ID("result").Size(giu.Auto, giu.Auto).Layout(giu.Label(status).Wrapped(true)),
-	)
-}
+var embedded embed.FS
 
 func main() {
-	wnd := giu.NewMasterWindow("Babel 安装器", 600, 500, giu.MasterWindowFlagsNotResizable)
-	uiScale = imgui.CurrentStyle().FontScaleDpi()
-	wnd.SetSize(int(600*uiScale), int(500*uiScale))
-	wnd.SetStyle(giu.DefaultTheme().
-		SetStyle(giu.StyleVarWindowPadding, 24*uiScale, 20*uiScale).
-		SetStyle(giu.StyleVarItemSpacing, 12*uiScale, 8*uiScale).
-		SetStyle(giu.StyleVarFramePadding, 10*uiScale, 9*uiScale).
-		SetStyleFloat(giu.StyleVarFrameRounding, 4*uiScale))
-	// Microsoft YaHei ships with Windows and carries the CJK glyphs ImGui's default
-	// font lacks. giu auto-registers the strings used below, so the needed glyphs
-	// are rasterized; the larger size also makes the UI look cleaner. (giu's font
-	// API takes the name and size separately.)
-	giu.Context.FontAtlas.SetDefaultFont("msyh.ttc")
-	giu.Context.FontAtlas.SetDefaultFontSize(18)
-	wnd.Run(loop)
+	if len(os.Args) == 3 && os.Args[1] == "--verify-localization" {
+		result := map[string]map[string]string{}
+		for _, locale := range []string{"en", "zh-Hans", "zh-Hant", "ja"} {
+			result[locale] = map[string]string{}
+			for _, id := range []string{"win.title", "win.install", "win.permission", "common.detail.kept"} {
+				result[locale][id] = i18n.T(locale, id, nil)
+			}
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(os.Args[2], data, 0600); err != nil {
+			panic(err)
+		}
+		return
+	}
+	payload, err := fs.Sub(embedded, "payload")
+	if err != nil {
+		panic(err)
+	}
+	manifest, err := core.ValidatePayload(payload)
+	if len(os.Args) == 3 && os.Args[1] == "--verify-payload" {
+		if err != nil {
+			panic(err)
+		}
+		data, marshalErr := json.Marshal(manifest)
+		if marshalErr != nil {
+			panic(marshalErr)
+		}
+		if writeErr := os.WriteFile(os.Args[2], data, 0600); writeErr != nil {
+			panic(writeErr)
+		}
+		return
+	}
+	ui.Run(payload, manifest.Version, err)
 }

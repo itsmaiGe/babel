@@ -12,28 +12,45 @@ const SCRIPT_RANGES = [
   ["kana", /[぀-ゟ゠-ヿㇰ-ㇿ]/u],
   ["hangul", /[가-힯ᄀ-ᇿ㄰-㆏]/u],
   ["cyrillic", /[Ѐ-ԯ]/u],
-  ["latin", /[A-Za-zÀ-ɏ]/u]
+  ["latin", /[A-Za-zÀ-ɏ]/u],
 ];
 
 const LANGUAGE_SCRIPT = Object.freeze({
-  "简体中文": "han",
-  "繁体中文": "han",
-  "中文": "han",
-  "日语": "kana",
-  "日文": "kana",
-  "韩语": "hangul",
-  "韩文": "hangul",
-  "俄语": "cyrillic",
-  "俄文": "cyrillic"
+  简体中文: "han",
+  繁体中文: "han",
+  中文: "han",
+  日语: "kana",
+  日文: "kana",
+  韩语: "hangul",
+  韩文: "hangul",
+  俄语: "cyrillic",
+  俄文: "cyrillic",
 });
 
+function languageText(text) {
+  return String(text || "").replace(
+    /```[\s\S]*?```|`[^`]*`|https?:\/\/[^\s]+/g,
+    " ",
+  );
+}
+function hasLetters(text) {
+  return /\p{L}/u.test(languageText(text));
+}
 function countScripts(text) {
-  const counts = { han: 0, kana: 0, hangul: 0, cyrillic: 0, latin: 0, total: 0 };
-  for (const ch of String(text || "")) {
+  const counts = {
+    han: 0,
+    kana: 0,
+    hangul: 0,
+    cyrillic: 0,
+    latin: 0,
+    total: 0,
+  };
+  for (const ch of languageText(text)) {
+    if (!/\p{L}/u.test(ch)) continue;
+    counts.total += 1;
     for (const [name, re] of SCRIPT_RANGES) {
       if (re.test(ch)) {
         counts[name] += 1;
-        counts.total += 1;
         break;
       }
     }
@@ -62,24 +79,35 @@ function textMatchesLanguage(text, language) {
   if (!expected) return false;
 
   const counts = countScripts(text);
-  if (counts.total === 0) return false;
+  if (counts.total < 4) return false;
   const dominant = dominantScript(text);
 
   if (expected === "han") {
     // Chinese: Han-dominant with no Kana/Hangul (those flag Japanese / Korean).
-    return dominant === "han" && counts.kana === 0 && counts.hangul === 0;
+    return (
+      dominant === "han" &&
+      counts.han / counts.total >= 0.8 &&
+      counts.kana === 0 &&
+      counts.hangul === 0
+    );
   }
   if (expected === "kana") {
     // Japanese: any Kana at all is a strong signal (Japanese also mixes in Han).
-    return counts.kana > 0;
+    return counts.kana >= 2 && (counts.kana + counts.han) / counts.total >= 0.8;
   }
   if (expected === "hangul") {
-    return counts.hangul > 0;
+    return counts.hangul / counts.total >= 0.8;
   }
   if (expected === "cyrillic") {
-    return dominant === "cyrillic";
+    return dominant === "cyrillic" && counts.cyrillic / counts.total >= 0.8;
   }
   return false;
 }
 
-module.exports = { countScripts, dominantScript, textMatchesLanguage };
+module.exports = {
+  hasLetters,
+  languageText,
+  countScripts,
+  dominantScript,
+  textMatchesLanguage,
+};
