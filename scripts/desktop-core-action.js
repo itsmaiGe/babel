@@ -542,7 +542,11 @@ function uninstallDiscordMod(options = {}) {
   const coreDirs = resolveAllDiscordCoreDirs(options);
   const profile = selectedProfile(options);
   const removeData = options.removeProfileData === true && !options.keepConfig;
-  if (removeData && profileIsUnsafe(profile))
+  // Refuse loudly instead of erasing anything when the erase target is not a
+  // safely identified profile store: a profile the platform cannot match ("unmatched")
+  // or a linked store. The native erases enforce the same rule (Go profileUnknown,
+  // macOS profileUnsafe), and nothing below may delete an unidentified store.
+  if (removeData && (profile.state === "Unknown" || profileIsUnsafe(profile)))
     throw new Error("Refusing to erase an unmatched or linked profile store.");
   const activity = discordActivity(discordBaseDir(options), options);
   const result = {

@@ -644,6 +644,72 @@ test("an in-flight send is dropped when its language configuration changes", asy
   assert.equal(next.text, "must-not-land");
   assert.equal(calls, 2);
 });
+// Windows chmod does not enforce POSIX access bits. The denial tests keep the
+// real permission modes where the OS enforces them and inject the same EACCES
+// failures the OS raises elsewhere, so denial and rollback stay covered on
+// every platform behind identical assertions.
+function denyFileReads(t, file) {
+  if (process.platform !== "win32") {
+    fs.chmodSync(file, 0);
+    const restore = () => {
+      try {
+        fs.chmodSync(file, 0o600);
+      } catch (_) {}
+    };
+    t.after(restore);
+    return restore;
+  }
+  const original = fs.openSync;
+  const restore = () => {
+    fs.openSync = original;
+  };
+  fs.openSync = (target, ...args) => {
+    if (String(target) === file)
+      throw Object.assign(
+        new Error(`EACCES: permission denied, open '${file}'`),
+        { code: "EACCES" },
+      );
+    return original.call(fs, target, ...args);
+  };
+  t.after(restore);
+  return restore;
+}
+function denyDirectoryWrites(t, directory) {
+  if (process.platform !== "win32") {
+    fs.chmodSync(directory, 0o555);
+    const restore = () => {
+      try {
+        fs.chmodSync(directory, 0o700);
+      } catch (_) {}
+    };
+    t.after(restore);
+    return restore;
+  }
+  const rename = fs.promises.rename,
+    writeFile = fs.promises.writeFile;
+  const denied = (target) => String(target).startsWith(directory + path.sep);
+  const blocked = (operation, target) =>
+    Object.assign(
+      new Error(`EACCES: permission denied, ${operation} '${target}'`),
+      { code: "EACCES" },
+    );
+  const restore = () => {
+    fs.promises.rename = rename;
+    fs.promises.writeFile = writeFile;
+  };
+  fs.promises.rename = (from, to, ...rest) => {
+    if (denied(from) || denied(to))
+      return Promise.reject(blocked("rename", from));
+    return rename.call(fs.promises, from, to, ...rest);
+  };
+  fs.promises.writeFile = (target, ...rest) => {
+    if (denied(target))
+      return Promise.reject(blocked("writeFile", target));
+    return writeFile.call(fs.promises, target, ...rest);
+  };
+  t.after(restore);
+  return restore;
+}
 function keyFixture(t, raw) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "babel-keys-")),
     file = path.join(directory, "api-keys.json"),
@@ -758,7 +824,7 @@ test("oversized and non-object key files are recoverable, and access denial is n
   const missing = keyFixture(t);
   assert.equal(missing.keys.fault, null);
   const denied = keyFixture(t, '{"openai":{"enc":"plain","value":"abc"}}');
-  fs.chmodSync(denied.file, 0);
+  const restoreReads = denyFileReads(t, denied.file);
   const blocked = new KeyStore(denied.directory, denied.keys.electron, denied.writer);
   assert.equal(blocked.fault.code, "STORAGE");
   assert.equal(blocked.fault.reason, "ACCESS_DENIED");
@@ -768,7 +834,7 @@ test("oversized and non-object key files are recoverable, and access denial is n
     blocked.preserveAndClear(),
     (error) => error.code === "STORAGE" && error.reason === "ACCESS_DENIED",
   );
-  fs.chmodSync(denied.file, 0o600);
+  restoreReads();
   assert.equal(fs.readFileSync(denied.file, "utf8"), '{"openai":{"enc":"plain","value":"abc"}}');
 });
 test("a failed key reset leaves the damaged bytes and does not write settings", async (t) => {
@@ -779,7 +845,7 @@ test("a failed key reset leaves the damaged bytes and does not write settings", 
   fs.writeFileSync(settingsFile, beforeSettings);
   settings.reload(true);
   const revision = settings.settingsRevision;
-  fs.chmodSync(directory, 0o555);
+  const restoreWrites = denyDirectoryWrites(t, directory);
   await assert.rejects(
     settings.save({
       baseSettingsRevision: revision,
@@ -788,7 +854,7 @@ test("a failed key reset leaves the damaged bytes and does not write settings", 
     }),
     (error) => error.code === "STORAGE" && error.reason === "ACCESS_DENIED",
   );
-  fs.chmodSync(directory, 0o700);
+  restoreWrites();
   assert.equal(fs.readFileSync(file, "utf8"), original);
   assert.equal(fs.readFileSync(settingsFile, "utf8"), beforeSettings);
   assert.equal(keys.fault.reason, "INVALID_JSON");

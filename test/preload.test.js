@@ -7,7 +7,12 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 function bridgeHarness() {
-  const source = fs.readFileSync(path.join(__dirname, "../src/mod/preload.js"), "utf8");
+  // Canonical text: the extraction markers below are anchored on LF, and a CRLF
+  // checkout must still build the byte-identical bridge source (the bridge runs
+  // from canonical source text, never from raw checkout bytes).
+  const source = fs
+    .readFileSync(path.join(__dirname, "../src/mod/preload.js"), "utf8")
+    .replace(/\r\n?/g, "\n");
   const start = source.indexOf("String.raw`\n") + "String.raw`\n".length;
   const code = source.slice(start, source.indexOf("\n`;", start));
   const listeners = new Map();

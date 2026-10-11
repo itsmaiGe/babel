@@ -9,8 +9,8 @@ const corpus = require("./fixtures/installer-conformance.json");
 const core = require("../scripts/desktop-core-action");
 const injector =
   "require('./other-injector');\nmodule.exports = require('./core.asar');\n";
-function setup(directory, entry) {
-  const base = path.join(directory, "discord"),
+function setup(directory, entry, name = "discord") {
+  const base = path.join(directory, name),
     target = path.join(
       base,
       "app-0.0.999/modules/discord_desktop_core-1/discord_desktop_core",
@@ -128,9 +128,79 @@ test("JS selected-profile cleanup rejects a symlink and preserves its destinatio
     outside = path.join(temp, "outside");
   fs.renameSync(f.store, outside);
   fs.symlinkSync(outside, f.store, "dir");
-  assert.throws(() =>
-    core.uninstallDiscordMod({ baseDir: f.base, removeProfileData: true }),
+  // Select the profile the way every installer caller does, with the real
+  // user-data directory: only a genuinely selected profile reaches the linked
+  // store guard (Windows otherwise derives no profile from a temp fixture).
+  assert.throws(
+    () =>
+      core.uninstallDiscordMod({
+        baseDir: f.base,
+        userDataDir: f.base,
+        removeProfileData: true,
+      }),
+    /unmatched or linked profile store/,
   );
   assert.ok(fs.existsSync(path.join(outside, "api-keys.json")));
   assert.ok(fs.readFileSync(f.index, "utf8").includes(core.LOADER_MARKER));
+  assert.equal(fs.lstatSync(f.store).isSymbolicLink(), true);
+});
+
+function selectWindowsProfile(t, { localAppData, appData }) {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const previous = {
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    APPDATA: process.env.APPDATA,
+  };
+  Object.defineProperty(process, "platform", {
+    value: "win32",
+    configurable: true,
+    enumerable: platform?.enumerable,
+  });
+  process.env.LOCALAPPDATA = localAppData;
+  process.env.APPDATA = appData;
+  t.after(() => {
+    Object.defineProperty(process, "platform", platform);
+    for (const [name, value] of Object.entries(previous))
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+  });
+}
+
+test("JS Windows profile selection guards linked and unmatched profile stores", (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "babel-profile-win-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const localAppData = path.join(temp, "local"),
+    appData = path.join(temp, "roaming");
+  fs.mkdirSync(localAppData, { recursive: true });
+  fs.mkdirSync(appData, { recursive: true });
+  selectWindowsProfile(t, { localAppData, appData });
+
+  // A real selected Windows profile: the install root is the LOCALAPPDATA
+  // identity and the Roaming profile holds the linked store. The real
+  // derivation must select it and refuse to erase the linked destination.
+  const selected = setup(localAppData, corpus[0], "Discord");
+  const outside = path.join(temp, "outside");
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "api-keys.json"), "saved");
+  const store = path.join(appData, "discord", core.PAYLOAD_DIR_NAME);
+  fs.mkdirSync(path.dirname(store), { recursive: true });
+  fs.symlinkSync(outside, store, "dir");
+  assert.throws(
+    () =>
+      core.uninstallDiscordMod({ baseDir: selected.base, removeProfileData: true }),
+    /unmatched or linked profile store/,
+  );
+  assert.equal(fs.readFileSync(path.join(outside, "api-keys.json"), "utf8"), "saved");
+  assert.ok(fs.readFileSync(selected.index, "utf8").includes(core.LOADER_MARKER));
+  assert.equal(fs.lstatSync(store).isSymbolicLink(), true);
+
+  // A target outside the Windows install identity is unmatched: with data
+  // erasure requested the cleanup must refuse loudly and touch nothing.
+  const custom = setup(path.join(temp, "custom"), corpus[0]);
+  assert.throws(
+    () =>
+      core.uninstallDiscordMod({ baseDir: custom.base, removeProfileData: true }),
+    /unmatched or linked profile store/,
+  );
+  assert.ok(fs.existsSync(custom.store));
 });

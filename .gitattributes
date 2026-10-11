@@ -1,0 +1,4 @@
+# Canonical LF text on every platform. Generated localization catalogs are
+# verified byte-for-byte and the test harnesses extract exact source text, so
+# Windows checkouts must see the same bytes as macOS and Linux.
+* text=auto eol=lf
