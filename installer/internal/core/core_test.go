@@ -11,10 +11,30 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 )
+
+// syncBuffer collects the holder child's diagnostics without racing the
+// exec copy goroutines that write them.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // fakeDiscord builds a minimal Discord user-data tree with the given app
 // versions, each having a valid discord_desktop_core, and returns the base dir.
@@ -752,7 +772,14 @@ func TestLockHolder(t *testing.T) {
 	if err = os.WriteFile(os.Getenv("BABEL_LOCK_READY"), []byte("ready"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	select {}
+	// Hold the lock until the parent kills this process. A bare select{} parks
+	// every goroutine with no timer pending, and the runtime's deadlock detector
+	// then kills the process ("all goroutines are asleep - deadlock!") at the
+	// next scheduler check — releasing the lock before the parent can observe
+	// it. A live timer keeps the detector quiet for the whole hold window.
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func TestLockReleasedWhenHolderExits(t *testing.T) {
@@ -760,32 +787,55 @@ func TestLockReleasedWhenHolderExits(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "ready")
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestLockHolder$")
 	cmd.Env = append(os.Environ(), "BABEL_LOCK_HOLD="+base, "BABEL_LOCK_READY="+ready)
+	var diagnostics syncBuffer
+	cmd.Stdout = &diagnostics
+	cmd.Stderr = &diagnostics
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	var waitErr error
+	exited := make(chan struct{})
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
 	stopped := false
 	defer func() {
-		if !stopped && cmd.Process != nil {
+		if !stopped {
 			cmd.Process.Kill()
-			cmd.Wait()
+			<-exited
 		}
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for !fileExists(ready) {
+		select {
+		case <-exited:
+			t.Fatalf("lock holder exited before becoming ready: %v\n%s", waitErr, diagnostics.String())
+		default:
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("lock holder did not become ready")
+			t.Fatalf("lock holder did not become ready\n%s", diagnostics.String())
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// The ready file exists only after the holder owns the lock. If the holder
+	// died in the meantime, a successful install below would only prove that
+	// process death releases the lock: check liveness first so a real lock
+	// failure stays distinguishable from a dead holder.
+	select {
+	case <-exited:
+		t.Fatalf("lock holder exited while holding the lock: %v\n%s", waitErr, diagnostics.String())
+	default:
 	}
 	_, err := Install(base, samplePayload())
 	var message *MessageError
 	if !errors.As(err, &message) || message.ID != "common.error.targetLocked" {
-		t.Fatalf("expected target lock, got %v", err)
+		t.Fatalf("expected target lock, got %v\n%s", err, diagnostics.String())
 	}
 	if err = cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("failed to kill the lock holder: %v\n%s", err, diagnostics.String())
 	}
-	cmd.Wait()
+	<-exited
 	stopped = true
 	deadline = time.Now().Add(5 * time.Second)
 	var last error
